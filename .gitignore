@@ -42,3 +42,8 @@ repo/
 ### Misc ###
 *.log
 crash-reports/
+
+### Don't push ###
+docs/
+tools/
+net/
