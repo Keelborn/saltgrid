@@ -1,0 +1,12 @@
+{
+  "type": "swworldgencore:ocean",
+  "generator": {
+    "type": "swworldgencore:ocean",
+    "biome_source": {
+      "type": "minecraft:fixed",
+      "biome": "minecraft:ocean"
+    },
+    "seed": 12345,
+    "sea_level": 63
+  }
+}
