@@ -4,6 +4,7 @@ import com.mojang.serialization.Codec;
 import com.mojang.serialization.MapCodec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import net.minecraft.core.BlockPos;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.WorldGenRegion;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.ChunkPos;
@@ -36,11 +37,8 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
     private static final int BASE_FLOOR = 25;
 
-    // радиус острова в блоках — от центра до начала пляжа
     private static final double SPAWN_ISLAND_RADIUS = 170.0;
-    // ширина переходной зоны (пляж + склон под воду)
     private static final double SPAWN_ISLAND_FEATHER = 60.0;
-    // максимальная высота холмов над seaLevel
     private static final int SPAWN_ISLAND_MAX_HEIGHT = 18;
 
     public static final MapCodec<OceanChunkGenerator> CODEC = RecordCodecBuilder.mapCodec(instance ->
@@ -66,7 +64,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
         return CODEC;
     }
 
-    private double hash(int x, int z) {
+    private double hsh(int x, int z) {
         long n = (long) x * 73856093L ^ (long) z * 19349663L ^ seed;
         n = (n ^ (n >> 13)) * 1274126177L;
         n = n ^ (n >> 16);
@@ -79,8 +77,8 @@ public class OceanChunkGenerator extends ChunkGenerator {
         double u = xf * xf * (3 - 2 * xf);
         double v = zf * zf * (3 - 2 * zf);
 
-        double a = hash(xi, zi), b = hash(xi + 1, zi);
-        double c = hash(xi, zi + 1), d = hash(xi + 1, zi + 1);
+        double a = hsh(xi, zi), b = hsh(xi + 1, zi);
+        double c = hsh(xi, zi + 1), d = hsh(xi + 1, zi + 1);
         return (a + u * (b - a)) + v * ((c + u * (d - c)) - (a + u * (b - a)));
     }
 
@@ -95,7 +93,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
         return val / max;
     }
 
-    private int floorAt(int x, int z) {
+    private int flr(int x, int z) {
         double wx = x + fbm(x * 0.005, z * 0.005, 2, 2.0, 0.5) * 80;
         double wz = z + fbm(x * 0.005 + 31.7, z * 0.005 + 47.3, 2, 2.0, 0.5) * 80;
 
@@ -106,75 +104,61 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 + fbm(wx * 0.12, wz * 0.12, 2, 2.0, 0.3) * 2;
 
         int floor = Math.max(-63, Math.min((int) h, seaLevel - 4));
-        int sp = spawnIslandHeight(x, z);
+        int sp = islandH(x, z);
         if (sp > 0) floor = Math.max(floor, seaLevel + sp);
         return floor;
     }
 
-    // тропическая поверхность: песок → coarse dirt → грунт → трава
-    // для спавн-острова pickSurface получает spawnT и использует его для выбора слоя
-    private BlockState pickSurface(int x, int z, int fl, double spawnDist) {
-        // спавн-остров: определяем зону по spawnT
-        if (spawnDist < 1.0) {
-            if (fl < seaLevel) {
-                // под водой — как обычно (sand/gravel)
-                return pickOceanFloor(x, z, fl);
-            }
-            int aboveSea = fl - seaLevel;
-            if (aboveSea <= 2) {
-                // пляжная кромка — песок
-                return Blocks.SAND.defaultBlockState();
-            }
-            // остров выше пляжа: coarse dirt ближе к берегу, дальше — grass
-            // переход определяется spawnDist: ближе к 0 — трава, ближе к 1 — песок/coarse dirt
-            double beachBlend = Mth.clamp((spawnDist - 0.55) / 0.35, 0.0, 1.0);
-            if (beachBlend > 0.6) return Blocks.SAND.defaultBlockState();
-            if (beachBlend > 0.3) return Blocks.COARSE_DIRT.defaultBlockState();
+    private BlockState pickSurf(int x, int z, int fl, double sd) {
+        if (sd < 1.0) {
+            if (fl < seaLevel) return oceanFloor(x, z, fl);
+            int above = fl - seaLevel;
+            if (above <= 2) return Blocks.SAND.defaultBlockState();
+            double bb = Mth.clamp((sd - 0.55) / 0.35, 0.0, 1.0);
+            if (bb > 0.6) return Blocks.SAND.defaultBlockState();
+            if (bb > 0.3) return Blocks.COARSE_DIRT.defaultBlockState();
             return Blocks.GRASS_BLOCK.defaultBlockState();
         }
 
-        // обычный океанский пол
         if (fl >= seaLevel) {
             return fl <= seaLevel + 2 ? Blocks.SAND.defaultBlockState() : Blocks.GRASS_BLOCK.defaultBlockState();
         }
-        return pickOceanFloor(x, z, fl);
+        return oceanFloor(x, z, fl);
     }
 
-    // вынесено из pickSurface — океанский пол без изменений
-    private BlockState pickOceanFloor(int x, int z, int fl) {
+    private BlockState oceanFloor(int x, int z, int fl) {
         int depth = seaLevel - fl;
-        double depthNorm = Mth.clamp((double)(depth - 4) / 50.0, 0.0, 1.0);
+        double dn = Mth.clamp((double)(depth - 4) / 50.0, 0.0, 1.0);
 
         double n = fbm(x * 0.016, z * 0.016, 3, 2.0, 0.5)
                 + fbm(x * 0.08, z * 0.08, 2, 2.0, 0.5) * 0.2;
 
-        double thresh = 0.7 - depthNorm * 0.2;
-        BlockState base = n > thresh ? Blocks.GRAVEL.defaultBlockState() : Blocks.SAND.defaultBlockState();
+        double th = 0.7 - dn * 0.2;
+        BlockState base = n > th ? Blocks.GRAVEL.defaultBlockState() : Blocks.SAND.defaultBlockState();
 
-        double det = hash(x * 7, z * 13);
+        double det = hsh(x * 7, z * 13);
         if (base.is(Blocks.GRAVEL) && det < 0.03) return Blocks.COBBLESTONE.defaultBlockState();
         if (base.is(Blocks.SAND) && det < 0.02) return Blocks.CLAY.defaultBlockState();
 
         return base;
     }
 
-    // возвращает подповерхностный блок спавн-острова (под grass/coarse dirt)
-    private BlockState pickSubSurface(int x, int z, int fl, double spawnDist) {
-        if (spawnDist >= 1.0 || fl < seaLevel) return null;
-        int aboveSea = fl - seaLevel;
-        if (aboveSea <= 2) return Blocks.SAND.defaultBlockState(); // под пляжем — песок
-        double beachBlend = Mth.clamp((spawnDist - 0.55) / 0.35, 0.0, 1.0);
-        if (beachBlend > 0.3) return Blocks.SAND.defaultBlockState();
-        return Blocks.DIRT.defaultBlockState(); // под травой — земля
+    private BlockState subSurf(int x, int z, int fl, double sd) {
+        if (sd >= 1.0 || fl < seaLevel) return null;
+        int above = fl - seaLevel;
+        if (above <= 2) return Blocks.SAND.defaultBlockState();
+        double bb = Mth.clamp((sd - 0.55) / 0.35, 0.0, 1.0);
+        if (bb > 0.3) return Blocks.SAND.defaultBlockState();
+        return Blocks.DIRT.defaultBlockState();
     }
 
-    private BlockState pickSlab(BlockState s) {
+    private BlockState slab(BlockState s) {
         if (s.is(Blocks.SAND)) return Blocks.SANDSTONE_SLAB.defaultBlockState();
         if (s.is(Blocks.GRAVEL) || s.is(Blocks.COBBLESTONE)) return Blocks.COBBLESTONE_SLAB.defaultBlockState();
         return Blocks.STONE_SLAB.defaultBlockState();
     }
 
-    private boolean wantsSeagrass(int x, int z, int fl) {
+    private boolean hasGrass(int x, int z, int fl) {
         int depth = seaLevel - fl;
         if (depth < 2 || depth > 40) return false;
 
@@ -185,38 +169,33 @@ public class OceanChunkGenerator extends ChunkGenerator {
         else if (depth <= 30) ch = 0.1;
         else ch = 0.04;
 
-        return fbm(x * 0.08, z * 0.08, 2, 2.0, 0.5) > 0.3 && hash(x * 31, z * 37) < ch;
+        return fbm(x * 0.08, z * 0.08, 2, 2.0, 0.5) > 0.3 && hsh(x * 31, z * 37) < ch;
     }
 
-    private boolean slopeNeedsSlab(int x, int z) {
-        int h = floorAt(x, z);
-        return h < floorAt(x, z - 1) || h < floorAt(x, z + 1)
-                || h < floorAt(x + 1, z) || h < floorAt(x - 1, z);
+    private boolean needsSlab(int x, int z) {
+        int h = flr(x, z);
+        return h < flr(x, z - 1) || h < flr(x, z + 1)
+                || h < flr(x + 1, z) || h < flr(x - 1, z);
     }
 
-    private boolean isIslandCenter(int x, int z) {
+    private boolean isIsland(int x, int z) {
         int cellX = Math.floorDiv(x, 2048), cellZ = Math.floorDiv(z, 2048);
-        if (hash(cellX * 11, cellZ * 13) > 0.6) return false;
+        if (hsh(cellX * 11, cellZ * 13) > 0.6) return false;
 
-        int cx = cellX * 2048 + 768 + (int)(hash(cellX * 2, cellZ * 2) * 512);
-        int cz = cellZ * 2048 + 768 + (int)(hash(cellX * 2 + 1, cellZ * 2 + 1) * 512);
+        int cx = cellX * 2048 + 768 + (int)(hsh(cellX * 2, cellZ * 2) * 512);
+        int cz = cellZ * 2048 + 768 + (int)(hsh(cellX * 2 + 1, cellZ * 2 + 1) * 512);
         return x == cx && z == cz;
     }
 
-    // нормализованное расстояние от центра спавн-острова [0,1], >1 = за пределами
-    // многослойная деформация: крупные бухты + средние изгибы + мелкие зазубрины
-    private double spawnT(int x, int z) {
+    private double islandDist(int x, int z) {
         double dist = Math.sqrt((double) x * x + (double) z * z);
 
-        // крупные бухты и полуострова — низкочастотный warp
         double warpLarge = fbm(x * 0.004 + 7.3, z * 0.004 + 2.1, 4, 2.0, 0.55) * 55
                          + fbm(x * 0.004 + 91.7, z * 0.004 + 53.4, 3, 2.0, 0.5) * 35;
 
-        // средние изгибы береговой линии
         double warpMid = fbm(x * 0.012 + 17.9, z * 0.012 + 83.1, 3, 2.0, 0.45) * 25
                        + fbm(x * 0.018 + 44.2, z * 0.018 + 11.6, 3, 2.0, 0.4) * 15;
 
-        // мелкие зазубрины и неровности берега
         double warpFine = fbm(x * 0.04 + 33.5, z * 0.04 + 67.8, 2, 2.0, 0.38) * 8
                         + fbm(x * 0.07 + 5.5, z * 0.07 + 99.2, 2, 2.0, 0.35) * 4;
 
@@ -224,41 +203,25 @@ public class OceanChunkGenerator extends ChunkGenerator {
         return Mth.clamp(d / SPAWN_ISLAND_RADIUS, 0.0, 1.0 + SPAWN_ISLAND_FEATHER / SPAWN_ISLAND_RADIUS);
     }
 
-    // высота острова над seaLevel: многослойный рельеф с холмами
-    private int spawnIslandHeight(int x, int z) {
-        double t = spawnT(x, z);
-        // feather zone: остров плавно уходит под воду на расстоянии SPAWN_ISLAND_FEATHER
+    private int islandH(int x, int z) {
+        double t = islandDist(x, z);
         double maxT = 1.0 + SPAWN_ISLAND_FEATHER / SPAWN_ISLAND_RADIUS;
         if (t >= maxT) return 0;
 
-        // edge falloff: 1.0 в центре, 0.0 на границе воды
-        // smoothstep для плавности
         double edge = Mth.clamp(1.0 - t / maxT, 0.0, 1.0);
         double falloff = edge * edge * (3.0 - 2.0 * edge);
 
-        // если falloff слишком мал — остров ещё под водой, не генерировать
         if (falloff < 0.05) return 0;
 
-        // крупные холмы (1-2 холма на остров)
         double hillLarge = (fbm(x * 0.006 + 13.0, z * 0.006 + 77.0, 4, 2.0, 0.5) - 0.3) * 1.4;
         hillLarge = Math.max(0, hillLarge);
 
-        // средние перепады рельефа
-        double hillMid = fbm(x * 0.018 + 55.0, z * 0.018 + 31.0, 3, 2.0, 0.48) * 0.5
-                       + fbm(x * 0.03 + 88.0, z * 0.03 + 22.0, 3, 2.0, 0.44) * 0.3;
+        double hillMid = fbm(x * 0.018 + 55.0, z * 0.018 + 31.0, 3, 2.0, 0.48) * 0.5;
 
-        // мелкая рябь поверхности
-        double detail = fbm(x * 0.07 + 4.4, z * 0.07 + 61.0, 2, 2.0, 0.42) * 0.15
-                      + fbm(x * 0.12, z * 0.12, 2, 2.0, 0.35) * 0.07;
+        double detail = fbm(x * 0.05 + 99.0, z * 0.05 + 12.0, 2, 2.0, 0.4) * 0.15;
 
-        // итоговый рельеф: большие холмы давят на маску сильнее в центре
-        double relief = hillLarge * 0.6 + hillMid + detail;
-
-        // применяем falloff: у берега рельеф прижат к нулю, в центре — полный
-        double h = relief * falloff * SPAWN_ISLAND_MAX_HEIGHT;
-
-        // гарантируем минимум 1 блок над водой там где остров есть
-        return (int) Math.max(1, h);
+        double raw = (hillLarge + hillMid + detail) * falloff * SPAWN_ISLAND_MAX_HEIGHT;
+        return Math.max(1, (int) Math.round(raw));
     }
 
     @Override
@@ -272,21 +235,19 @@ public class OceanChunkGenerator extends ChunkGenerator {
         for (int lx = 0; lx < 16; lx++) {
             for (int lz = 0; lz < 16; lz++) {
                 int wx = cx * 16 + lx, wz = cz * 16 + lz;
-                int fl = floorAt(wx, wz);
-                boolean onSlope = slopeNeedsSlab(wx, wz);
-                boolean isCenter = isIslandCenter(wx, wz);
-                double st = spawnT(wx, wz);
+                int fl = flr(wx, wz);
+                boolean onSlope = needsSlab(wx, wz);
+                boolean isCenter = isIsland(wx, wz);
+                double st = islandDist(wx, wz);
 
                 if (isCenter)
                     log.info("[Island] center at ({}, {})", wx, wz);
 
-                // кол-во dirt-слоёв под поверхностью на спавн-острове
-                // на пляже — 0 (там песок до камня), во внутренних зонах — 2-3
                 int dirtLayers = 0;
                 if (st < 1.0 && fl >= seaLevel) {
-                    double beachBlend = Mth.clamp((st - 0.55) / 0.35, 0.0, 1.0);
-                    if (beachBlend <= 0.3) dirtLayers = 3;
-                    else if (beachBlend <= 0.6) dirtLayers = 1;
+                    double bb = Mth.clamp((st - 0.55) / 0.35, 0.0, 1.0);
+                    if (bb <= 0.3) dirtLayers = 3;
+                    else if (bb <= 0.6) dirtLayers = 1;
                 }
 
                 int skip = 0;
@@ -303,26 +264,24 @@ public class OceanChunkGenerator extends ChunkGenerator {
                         chunk.setBlockState(at, Blocks.STONE.defaultBlockState(), false);
 
                     } else if (y < fl) {
-                        // dirt-прослойка под поверхностью (только на спавн-острове, выше воды)
-                        BlockState sub = pickSubSurface(wx, wz, fl, st);
+                        BlockState sub = subSurf(wx, wz, fl, st);
                         chunk.setBlockState(at, sub != null ? sub : Blocks.STONE.defaultBlockState(), false);
 
                     } else if (y == fl) {
-                        chunk.setBlockState(at, pickSurface(wx, wz, fl, st), false);
+                        chunk.setBlockState(at, pickSurf(wx, wz, fl, st), false);
                         surfCnt++;
 
                     } else if (y == fl + 1) {
                         if (fl >= seaLevel) {
-                            // воздух над сушей
                         } else if (onSlope) {
-                            BlockState sl = pickSlab(pickSurface(wx, wz, fl, st))
+                            BlockState sl = slab(pickSurf(wx, wz, fl, st))
                                     .setValue(SlabBlock.TYPE, SlabType.BOTTOM)
                                     .setValue(SlabBlock.WATERLOGGED, true);
                             chunk.setBlockState(at, sl, false);
                             slabCnt++;
 
-                        } else if (wantsSeagrass(wx, wz, fl)) {
-                            boolean tall = hash(wx * 17, wz * 23) < 0.3;
+                        } else if (hasGrass(wx, wz, fl)) {
+                            boolean tall = hsh(wx * 17, wz * 23) < 0.3;
                             if (tall) {
                                 chunk.setBlockState(at, Blocks.TALL_SEAGRASS.defaultBlockState()
                                         .setValue(TallSeagrassBlock.HALF, net.minecraft.world.level.block.state.properties.DoubleBlockHalf.LOWER), false);
@@ -358,7 +317,23 @@ public class OceanChunkGenerator extends ChunkGenerator {
                              ChunkAccess chunk, GenerationStep.Carving step) {}
 
     @Override
-    public void applyBiomeDecoration(WorldGenLevel level, ChunkAccess chunk, StructureManager structureManager) {}
+    public void applyBiomeDecoration(WorldGenLevel level, ChunkAccess chunk, StructureManager structureManager) {
+        ChunkPos cp = chunk.getPos();
+        int cx = cp.x, cz = cp.z;
+
+        for (int lx = 2; lx < 14; lx++) {
+            for (int lz = 2; lz < 14; lz++) {
+                int wx = cx * 16 + lx, wz = cz * 16 + lz;
+                int fl = flr(wx, wz);
+                if (fl < seaLevel) continue;
+                double st = islandDist(wx, wz);
+                if (st >= 1.0) continue;
+                if (hsh(wx * 41, wz * 43) > 0.003) continue;
+
+                PalmGenerator.tryPlacePalm(level, wx, fl + 1, wz, hsh(wx * 53, wz * 59));
+            }
+        }
+    }
 
     @Override
     public void spawnOriginalMobs(WorldGenRegion region) {}
@@ -375,15 +350,15 @@ public class OceanChunkGenerator extends ChunkGenerator {
     @Override
     public int getBaseHeight(int x, int z, Heightmap.Types heightmapType,
                              LevelHeightAccessor level, RandomState random) {
-        int fl = floorAt(x, z);
-        return slopeNeedsSlab(x, z) ? fl + 2 : fl + 1;
+        int fl = flr(x, z);
+        return needsSlab(x, z) ? fl + 2 : fl + 1;
     }
 
     @Override
     public NoiseColumn getBaseColumn(int x, int z, LevelHeightAccessor level, RandomState random) {
-        int fl = floorAt(x, z);
-        boolean onSlope = slopeNeedsSlab(x, z);
-        double st = spawnT(x, z);
+        int fl = flr(x, z);
+        boolean onSlope = needsSlab(x, z);
+        double st = islandDist(x, z);
 
         int dirtLayers = 0;
         if (st < 1.0 && fl >= seaLevel) {
@@ -407,21 +382,21 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 col[y - minY] = Blocks.STONE.defaultBlockState();
 
             } else if (y < fl) {
-                BlockState sub = pickSubSurface(x, z, fl, st);
+                BlockState sub = subSurf(x, z, fl, st);
                 col[y - minY] = sub != null ? sub : Blocks.STONE.defaultBlockState();
 
             } else if (y == fl) {
-                col[y - minY] = pickSurface(x, z, fl, st);
+                col[y - minY] = pickSurf(x, z, fl, st);
 
             } else if (y == fl + 1) {
                 if (fl >= seaLevel) {
                     col[y - minY] = Blocks.AIR.defaultBlockState();
                 } else if (onSlope) {
-                    col[y - minY] = pickSlab(pickSurface(x, z, fl, st))
+                    col[y - minY] = slab(pickSurf(x, z, fl, st))
                             .setValue(SlabBlock.TYPE, SlabType.BOTTOM)
                             .setValue(SlabBlock.WATERLOGGED, true);
-                } else if (wantsSeagrass(x, z, fl)) {
-                    if (hash(x * 17, z * 23) < 0.3) {
+                } else if (hasGrass(x, z, fl)) {
+                    if (hsh(x * 17, z * 23) < 0.3) {
                         col[y - minY] = Blocks.TALL_SEAGRASS.defaultBlockState()
                                 .setValue(TallSeagrassBlock.HALF, net.minecraft.world.level.block.state.properties.DoubleBlockHalf.LOWER);
                         if (y + 1 < maxY)
