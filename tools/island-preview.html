@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Spawn Island Preview</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#1a1a2e;color:#e0e0e0;font-family:monospace;display:flex;height:100vh}
+#ctrl{width:300px;padding:12px;overflow-y:auto;background:#16213e;border-right:2px solid #0f3460;flex-shrink:0}
+#ctrl h2{color:#e94560;margin-bottom:10px;font-size:13px}
+.g{margin-bottom:12px;border-bottom:1px solid #0f3460;padding-bottom:8px}
+.g h3{color:#53a8b6;font-size:11px;margin-bottom:4px}
+.r{display:flex;align-items:center;margin-bottom:3px}
+.r label{width:120px;font-size:10px;color:#a0a0a0}
+.r input[type=range]{flex:1;margin:0 6px}
+.r .v{width:44px;text-align:right;font-size:10px;color:#e94560}
+#wrap{flex:1;position:relative;overflow:hidden}
+canvas{position:absolute;top:0;left:0;width:100%;height:100%;image-rendering:pixelated;image-rendering:crisp-edges}
+#inf{position:fixed;bottom:8px;left:310px;font-size:10px;color:#666}
+</style>
+</head>
+<body>
+<div id="ctrl">
+<h2>Spawn Island Preview</h2>
+<div class="g"><h3>Форма</h3>
+<div class="r"><label>Радиус</label><input type="range" id="radius" min="50" max="300" value="170" step="5"><span class="v">170</span></div>
+<div class="r"><label>Warp крупный</label><input type="range" id="wL" min="0" max="80" value="55" step="1"><span class="v">55</span></div>
+<div class="r"><label>Warp средний</label><input type="range" id="wM" min="0" max="50" value="25" step="1"><span class="v">25</span></div>
+<div class="r"><label>Warp мелкий</label><input type="range" id="wF" min="0" max="20" value="8" step="1"><span class="v">8</span></div>
+</div>
+<div class="g"><h3>Высота</h3>
+<div class="r"><label>Max высота</label><input type="range" id="mH" min="1" max="30" value="18" step="1"><span class="v">18</span></div>
+<div class="r"><label>Feather</label><input type="range" id="feath" min="10" max="100" value="60" step="5"><span class="v">60</span></div>
+</div>
+<div class="g"><h3>Холмы</h3>
+<div class="r"><label>Hill крупный</label><input type="range" id="hL" min="0" max="3" value="1.4" step="0.1"><span class="v">1.4</span></div>
+<div class="r"><label>Hill средний</label><input type="range" id="hM" min="0" max="2" value="0.5" step="0.1"><span class="v">0.5</span></div>
+<div class="r"><label>Detail</label><input type="range" id="dtl" min="0" max="1" value="0.15" step="0.05"><span class="v">0.15</span></div>
+</div>
+<div class="g"><h3>Пляж</h3>
+<div class="r"><label>Ширина</label><input type="range" id="bW" min="0" max="8" value="2" step="1"><span class="v">2</span></div>
+</div>
+<div class="g"><h3>Seed</h3>
+<div class="r"><label>Seed</label><input type="number" id="seed" value="12345" style="width:80px;background:#0f3460;color:#e0e0e0;border:1px solid #e94560;padding:2px;font-size:11px"></div>
+</div>
+</div>
+<div id="wrap"><canvas id="c"></canvas></div>
+<div id="inf">Зум: колесо | Панорама: тяни мышкой</div>
+<script>
+var C=document.getElementById('c'),X=C.getContext('2d');
+var S=12345,zm=1,px=0,py=0,dr=0,mx,my;
+var RW=240,RH=180;
+
+function H(x,z){
+  var n=(x*73856093)^(z*19349663)^S;
+  n=((n^(n>>>13))*1274126177)|0;
+  n=(n^(n>>>16))|0;
+  return(n&0x7FFFFFFF)/0x7FFFFFFF;
+}
+
+function VN(x,z){
+  var xi=Math.floor(x),zi=Math.floor(z);
+  var xf=x-xi,zf=z-zi;
+  var u=xf*xf*(3-2*xf),v=zf*zf*(3-2*zf);
+  var a=H(xi,zi),b=H(xi+1,zi),c=H(xi,zi+1),d=H(xi+1,zi+1);
+  return(a+u*(b-a))+v*((c+u*(d-c))-(a+u*(b-a)));
+}
+
+function F(x,z,oct,lac,g){
+  var v=0,a=1,f=1,m=0;
+  for(var i=0;i<oct;i++){v+=a*VN(x*f,z*f);m+=a;a*=g;f*=lac;}
+  return v/m;
+}
+
+function gV(id){return parseFloat(document.getElementById(id).value)}
+
+function sT(x,z){
+  var d=Math.sqrt(x*x+z*z);
+  var R=gV('radius'),f=gV('feath');
+  var wL=F(x*.004+7.3,z*.004+2.1,4,2,.55)*gV('wL')+F(x*.004+91.7,z*.004+53.4,3,2,.5)*gV('wL')*.64;
+  var wM=F(x*.012+17.9,z*.012+83.1,3,2,.45)*gV('wM')+F(x*.018+44.2,z*.018+11.6,3,2,.4)*gV('wM')*.6;
+  var wF2=F(x*.04+33.5,z*.04+67.8,2,2,.38)*gV('wF')+F(x*.07+5.5,z*.07+99.2,2,2,.35)*gV('wF')*.5;
+  return Math.max(0,Math.min((d-(wL+wM+wF2))/R,1+f/R));
+}
+
+function sH(x,z){
+  var t=sT(x,z);
+  var mxT=1+gV('feath')/gV('radius');
+  if(t>=mxT)return 0;
+  var e=Math.max(0,Math.min(1-t/mxT,1));
+  var fo=e*e*(3-2*e);
+  if(fo<.05)return 0;
+  var hL=Math.max(0,(F(x*.006+13,z*.006+77,4,2,.5)-.3)*gV('hL'));
+  var hM=F(x*.018+55,z*.018+31,3,2,.48)*gV('hM')+F(x*.03+88,z*.03+22,3,2,.44)*gV('hM')*.6;
+  var dt=F(x*.07+4.4,z*.07+61,2,2,.42)*gV('dtl')+F(x*.12,z*.12,2,2,.35)*gV('dtl')*.5;
+  return Math.max(0,(hL*.6+hM+dt)*fo*gV('mH'));
+}
+
+function render(){
+  S=parseInt(document.getElementById('seed').value)||0;
+  C.width=RW;C.height=RH;
+  var R=gV('radius'),f=gV('feath'),mH=gV('mH'),bW=gV('bW');
+  var sc=Math.min(RW,RH)/((R+f)*2)*zm;
+  var ox=RW/2+px,oy=RH/2+py;
+  var mxT=1+f/R;
+
+  var hm=new Float32Array(RW*RH);
+  for(var y=0;y<RH;y++)
+    for(var x=0;x<RW;x++)
+      hm[y*RW+x]=sH((x-ox)/sc,(y-oy)/sc);
+
+  var img=X.createImageData(RW,RH),d=img.data;
+  for(var y=0;y<RH;y++){
+    for(var x=0;x<RW;x++){
+      var i=y*RW+x;
+      var h=hm[i];
+      var pi=(y*RW+x)*4;
+      var r,g,b;
+      if(h<=0){
+        r=30;g=100;b=190;
+      } else {
+        if(h<=bW){r=220;g=200;b=140;}
+        else{var hv=Math.min(h/mH,1);r=60+hv*30;g=140-hv*40;b=40+hv*10;}
+        var l=x>0?hm[i-1]:h,ri=x<RW-1?hm[i+1]:h;
+        var u=y>0?hm[i-RW]:h,dd=y<RH-1?hm[i+RW]:h;
+        var sh=((ri-l)+(dd-u))*.5;
+        r=Math.max(0,Math.min(255,r-sh*8));
+        g=Math.max(0,Math.min(255,g-sh*8));
+        b=Math.max(0,Math.min(255,b-sh*8));
+      }
+      d[pi]=r;d[pi+1]=g;d[pi+2]=b;d[pi+3]=255;
+    }
+  }
+  X.putImageData(img,0,0);
+  X.fillStyle='#e94560';
+  X.fillRect(ox-2,oy-2,4,4);
+
+  document.querySelectorAll('.r').forEach(function(row){
+    var inp=row.querySelector('input'),vl=row.querySelector('.v');
+    if(inp&&vl)vl.textContent=inp.value;
+  });
+}
+
+document.querySelectorAll('input').forEach(function(e){e.addEventListener('input',render)});
+C.addEventListener('wheel',function(e){e.preventDefault();zm*=e.deltaY<0?1.1:.9;zm=Math.max(.1,Math.min(zm,20));render()});
+C.addEventListener('mousedown',function(e){dr=1;mx=e.clientX;my=e.clientY});
+C.addEventListener('mousemove',function(e){if(dr){px+=e.clientX-mx;py+=e.clientY-my;mx=e.clientX;my=e.clientY;render()}});
+C.addEventListener('mouseup',function(){dr=0});
+C.addEventListener('mouseleave',function(){dr=0});
+render();
+</script>
+</body>
+</html>
