@@ -64,6 +64,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
         return CODEC;
     }
 
+    // хеш — xorshift, даёт псевдо-случайное [0,1] для координат
     private double hsh(int x, int z) {
         long n = (long) x * 73856093L ^ (long) z * 19349663L ^ seed;
         n = (n ^ (n >> 13)) * 1274126177L;
@@ -71,6 +72,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
         return (double) (n & 0x7FFFFFFFL) / (double) 0x7FFFFFFFL;
     }
 
+    //价值 noise — билинейная интерполяция 4 углов
     private double vnoise(double x, double z) {
         int xi = (int) Math.floor(x), zi = (int) Math.floor(z);
         double xf = x - xi, zf = z - zi;
@@ -82,6 +84,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
         return (a + u * (b - a)) + v * ((c + u * (d - c)) - (a + u * (b - a)));
     }
 
+    // fbm — фрактальный шум, oct=кол-во октав, lac=lacunarity, g=gain
     private double fbm(double x, double z, int oct, double lac, double g) {
         double val = 0, amp = 1, freq = 1, max = 0;
         for (int i = 0; i < oct; i++) {
@@ -93,6 +96,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
         return val / max;
     }
 
+    // высота дна в этой точке, с учётом спавн-острова
     private int flr(int x, int z) {
         double wx = x + fbm(x * 0.005, z * 0.005, 2, 2.0, 0.5) * 80;
         double wz = z + fbm(x * 0.005 + 31.7, z * 0.005 + 47.3, 2, 2.0, 0.5) * 80;
@@ -187,6 +191,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
         return x == cx && z == cz;
     }
 
+    // островная зона — возвращает [0,1], >1 = за пределами острова
     private double islandDist(int x, int z) {
         double dist = Math.sqrt((double) x * x + (double) z * z);
 
