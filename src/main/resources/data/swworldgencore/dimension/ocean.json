@@ -6,7 +6,7 @@
       "type": "minecraft:fixed",
       "biome": "minecraft:ocean"
     },
-    "seed": 12345,
+    "seed": 0,
     "sea_level": 63
   }
 }

@@ -108,7 +108,6 @@ public class OceanChunkGenerator extends ChunkGenerator {
     }
 
     private BlockState pickSurface(int x, int z, int fl) {
-        // над водой на спавн-острове — дёрн
         if (fl >= seaLevel) return Blocks.GRASS_BLOCK.defaultBlockState();
 
         int depth = seaLevel - fl;
@@ -166,10 +165,17 @@ public class OceanChunkGenerator extends ChunkGenerator {
         return x == cx && z == cz;
     }
 
-    // спавн-остров: круг из дёрна на (0,0), радиус ~35 блоков
+    // спавн-остров: круг с шумовой деформацией и falloff высоты
     private int spawnIslandHeight(int x, int z) {
         double dist = Math.sqrt((double) x * x + (double) z * z);
-        return dist <= 35 ? 1 : 0;
+        double wb = fbm(x * 0.03, z * 0.03, 3, 2.0, 0.5);
+        double ws = fbm(x * 0.12, z * 0.12, 2, 2.0, 0.4);
+        double d = dist - wb * 14 - ws * 6;
+        if (d > 70) return 0;
+
+        double t = Mth.clamp(d / 70.0, 0.0, 1.0);
+        double f = (1.0 - t * t);
+        return (int) (f * f * 4) + 1;
     }
 
     @Override
@@ -201,7 +207,6 @@ public class OceanChunkGenerator extends ChunkGenerator {
                         chunk.setBlockState(at, Blocks.BEDROCK.defaultBlockState(), false);
 
                     } else if (y <= fl) {
-                        // fl и ниже — камень (подложка)
                         chunk.setBlockState(at, Blocks.STONE.defaultBlockState(), false);
 
                     } else if (y == fl + 1) {
