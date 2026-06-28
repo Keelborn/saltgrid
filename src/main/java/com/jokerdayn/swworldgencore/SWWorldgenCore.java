@@ -19,12 +19,30 @@ import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
 import net.neoforged.neoforge.registries.RegisterEvent;
+import net.neoforged.neoforge.registries.DeferredRegister;
+import net.neoforged.neoforge.registries.DeferredHolder;
+import net.neoforged.neoforge.registries.DeferredBlock;
+import net.minecraft.core.Direction;
+import net.minecraft.world.level.block.state.BlockBehaviour;
+import net.minecraft.world.item.BlockItem;
+import net.minecraft.world.item.Item;
+import com.jokerdayn.swworldgencore.block.ShellBlock;
 import com.jokerdayn.swworldgencore.worldgen.OceanChunkGenerator;
+
+import java.util.function.Supplier;
 
 @Mod(SWWorldgenCore.MODID)
 public class SWWorldgenCore {
     public static final String MODID = "swworldgencore";
     public static final Logger LOGGER = LogUtils.getLogger();
+
+    public static final DeferredRegister.Blocks BLOCKS = DeferredRegister.createBlocks(MODID);
+    public static final DeferredRegister.Items ITEMS = DeferredRegister.createItems(MODID);
+
+    public static final DeferredBlock<ShellBlock> SHELL = BLOCKS.register("shell",
+        () -> new ShellBlock(BlockBehaviour.Properties.of().strength(0.1f).noOcclusion().noCollission().pushReaction(net.minecraft.world.level.material.PushReaction.DESTROY)));
+    public static final DeferredHolder<Item, BlockItem> SHELL_ITEM = ITEMS.register("shell",
+        () -> new BlockItem(SHELL.get(), new Item.Properties()));
 
     // хеш тот же что в OceanChunkGenerator — дублируем для команды
     private static long cmdSeed = 0;
@@ -32,6 +50,8 @@ public class SWWorldgenCore {
     public static void setSeed(long s) { cmdSeed = s; }
 
     public SWWorldgenCore(IEventBus modEventBus, ModContainer modContainer) {
+        BLOCKS.register(modEventBus);
+        ITEMS.register(modEventBus);
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(this::onRegister);
         NeoForge.EVENT_BUS.register(this);

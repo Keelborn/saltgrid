@@ -1,0 +1,22 @@
+{
+	"variants": {
+		"variation=yellow": [
+			{"model": "swworldgencore:block/seashell_yellow"},
+			{"model": "swworldgencore:block/seashell_yellow", "y": 90},
+			{"model": "swworldgencore:block/seashell_yellow", "y": 180},
+			{"model": "swworldgencore:block/seashell_yellow", "y": 270}
+		],
+		"variation=pink": [
+			{"model": "swworldgencore:block/seashell_pink"},
+			{"model": "swworldgencore:block/seashell_pink", "y": 90},
+			{"model": "swworldgencore:block/seashell_pink", "y": 180},
+			{"model": "swworldgencore:block/seashell_pink", "y": 270}
+		],
+		"variation=white": [
+			{"model": "swworldgencore:block/seashell_white"},
+			{"model": "swworldgencore:block/seashell_white", "y": 90},
+			{"model": "swworldgencore:block/seashell_white", "y": 180},
+			{"model": "swworldgencore:block/seashell_white", "y": 270}
+		]
+	}
+}

@@ -18,6 +18,8 @@ import net.minecraft.world.level.block.SlabBlock;
 import net.minecraft.world.level.block.TallSeagrassBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.SlabType;
+import com.jokerdayn.swworldgencore.SWWorldgenCore;
+import com.jokerdayn.swworldgencore.block.ShellBlock;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.levelgen.GenerationStep;
@@ -352,7 +354,8 @@ public class OceanChunkGenerator extends ChunkGenerator {
                         chunk.setBlockState(at, sub != null ? sub : Blocks.STONE.defaultBlockState(), false);
 
                     } else if (y == fl) {
-                        chunk.setBlockState(at, pickSurf(wx, wz, fl, st), false);
+                        BlockState surf = pickSurf(wx, wz, fl, st);
+                        chunk.setBlockState(at, surf, false);
                         surfCnt++;
 
                     } else if (y == fl + 1) {
@@ -422,8 +425,8 @@ public class OceanChunkGenerator extends ChunkGenerator {
         ChunkPos cp = chunk.getPos();
         int cx = cp.x, cz = cp.z;
 
-        for (int lx = 2; lx < 14; lx++) {
-            for (int lz = 2; lz < 14; lz++) {
+        for (int lx = 0; lx < 16; lx++) {
+            for (int lz = 0; lz < 16; lz++) {
                 int wx = cx * 16 + lx, wz = cz * 16 + lz;
                 double st = islandDist(wx, wz);
                 int sp = islandH(wx, wz, st);
@@ -436,6 +439,16 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 if (onSand && hsh(wx * 41, wz * 43) < 0.003) {
                     PalmGenerator.tryPlacePalm(level, wx, fl + 1, wz, hsh(wx * 53, wz * 59));
                     continue;
+                }
+
+                if (onSand && hsh(wx * 31, wz * 37) < 0.06) {
+                    BlockPos above = new BlockPos(wx, fl + 1, wz);
+                    if (level.getBlockState(above).isAir()) {
+                        ShellBlock.Variation[] vars = ShellBlock.Variation.values();
+                        ShellBlock.Variation v = vars[(int)(hsh(wx * 79, wz * 83) * 3) % 3];
+                        level.setBlock(above, SWWorldgenCore.SHELL.get().defaultBlockState()
+                            .setValue(ShellBlock.VARIANT, v), 2);
+                    }
                 }
 
                 if (!level.getBlockState(surface).is(Blocks.GRASS_BLOCK)) continue;
@@ -466,7 +479,29 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 }
                 else if (r < 0.52) {
                     if (level.getBlockState(above).is(Blocks.AIR)) {
-                        level.setBlock(above, Blocks.DEAD_BUSH.defaultBlockState(), 2);
+                        BlockState leaf = Blocks.JUNGLE_LEAVES.defaultBlockState();
+                        double bushR = hsh(wx * 97, wz * 83);
+                        int[][] bush;
+                        if (bushR < 0.33) {
+                            bush = new int[][]{
+                                {0,0,0},{1,0,0},{-1,0,0},{0,0,1},{0,0,-1},
+                                {1,0,1},{-1,0,-1},{0,1,0},{1,1,0},{0,1,1}
+                            };
+                        } else if (bushR < 0.66) {
+                            bush = new int[][]{
+                                {0,0,0},{1,0,0},{-1,0,0},{0,0,1},{0,0,-1},
+                                {1,0,-1},{-1,0,1},{0,1,0},{-1,1,0},{0,1,-1},{1,1,1}
+                            };
+                        } else {
+                            bush = new int[][]{
+                                {0,0,0},{2,0,0},{-1,0,0},{0,0,1},{0,0,-2},
+                                {1,0,1},{-1,0,-1},{0,1,0},{1,1,0},{0,1,1},{-1,1,0},{0,2,0}
+                            };
+                        }
+                        for (int[] b : bush) {
+                            BlockPos bp = new BlockPos(wx + b[0], fl + b[1], wz + b[2]);
+                            if (level.getBlockState(bp).isAir()) level.setBlock(bp, leaf, 2);
+                        }
                     }
                 }
             }

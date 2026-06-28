@@ -1,10 +1,13 @@
 package com.jokerdayn.swworldgencore.worldgen;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.world.level.WorldGenLevel;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.LeavesBlock;
+import net.minecraft.world.level.block.VineBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BooleanProperty;
 
 import java.util.Random;
 
@@ -127,6 +130,19 @@ public final class RainTreeGenerator {
             int dx = b[0], dy = b[1], dz = b[2], leaf = b[3];
             BlockState st = leaf == 1 ? WOOD : LEAF;
             level.setBlock(new BlockPos(ax + dx, ay + dy, az + dz), st, 2);
+        }
+
+        // vines on exposed faces
+        for (int[] b : blocks) {
+            int dx = b[0], dy = b[1], dz = b[2];
+            BlockPos bp = new BlockPos(ax + dx, ay + dy, az + dz);
+            for (Direction dir : Direction.Plane.HORIZONTAL) {
+                if (rng.nextDouble() > 0.22) continue;
+                BlockPos nb = bp.relative(dir);
+                if (!level.getBlockState(nb).isAir()) continue;
+                BooleanProperty prop = VineBlock.getPropertyForFace(dir.getOpposite());
+                level.setBlock(nb, Blocks.VINE.defaultBlockState().setValue(prop, true), 2);
+            }
         }
     }
 }

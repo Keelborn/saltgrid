@@ -2,6 +2,7 @@
   "itemGroup.swworldgencore": "Example Mod Tab",
   "block.swworldgencore.example_block": "Example Block",
   "item.swworldgencore.example_item": "Example Item",
+  "block.swworldgencore.shell": "Seashell",
 
   "swworldgencore.configuration.title": "SW: Worldgen Core Configs",
   "swworldgencore.configuration.section.swworldgencore.common.toml": "SW: Worldgen Core Configs",
