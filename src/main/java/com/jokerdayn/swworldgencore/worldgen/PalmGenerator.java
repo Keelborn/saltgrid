@@ -12,10 +12,18 @@ public final class PalmGenerator {
 
     private PalmGenerator() {}
 
-    private static final BlockState LEAF_STATE = Blocks.JUNGLE_LEAVES.defaultBlockState()
+    // persistent=true чтобы листва не декеилась
+    // иначе через несколько дней пальмы останутся голые
+    // это важно — игроки будут жаловаться
+    private static final BlockState LEAF = Blocks.JUNGLE_LEAVES.defaultBlockState()
             .setValue(LeavesBlock.PERSISTENT, true);
-    private static final BlockState WOOD_STATE = Blocks.JUNGLE_WOOD.defaultBlockState();
+    private static final BlockState WOOD = Blocks.JUNGLE_WOOD.defaultBlockState();
 
+    // хардкод координат из .nbt файлов
+    // structure templates не работают из кастомного ChunkGenerator
+    // (getOrCreate() возвращает size={0,0,0})
+    // поэтому парсим через tools/read_nbt.py + extract_blocks.py
+    // это костыль, но работает
     private static final int[][] PALM1 = {
         {-11,9,-1,1},{-10,9,-2,1},{-10,9,-1,1},{-10,11,4,1},{-10,11,5,1},
         {-9,10,-1,1},{-9,10,0,1},{-9,11,4,1},{-9,12,2,1},{-9,12,4,1},
@@ -133,30 +141,35 @@ public final class PalmGenerator {
         {4,9,-2,1},{4,9,-1,1},{4,11,-8,1},{4,11,-7,1},{5,9,-2,1},
     };
 
-    private static final int[][][] ALL_PALMS = {PALM1, PALM2, PALM3};
+    // все три варианта пальм — каждый с уникальной формой кроны
+    // пальма1 — прямая, пальма2 — наклонная, пальма3 — кривая
+    private static final int[][][] ALL = {PALM1, PALM2, PALM3};
 
-    public static void tryPlacePalm(WorldGenLevel level, int anchorX, int baseY, int anchorZ, double seedMix) {
-        BlockState below = level.getBlockState(new BlockPos(anchorX, baseY - 1, anchorZ));
+    // размещение пальмы — только на песке
+    // seedMix используется для выбора варианта и поворота
+    // это даёт детерминированный результат для одной точки
+    public static void tryPlacePalm(WorldGenLevel level, int ax, int ay, int az, double seedMix) {
+        BlockState below = level.getBlockState(new BlockPos(ax, ay - 1, az));
         if (!below.is(Blocks.SAND)) return;
 
-        long compactSeed = Double.doubleToLongBits(seedMix)
-                ^ ((long) anchorX * 982451653L)
-                ^ ((long) anchorZ * 718364721L)
-                ^ ((long) baseY * 123456789L);
-        Random rng = new Random(compactSeed);
+        // генерируем seed из координат + seedMix
+        // если переделать на обычный Random — будет недетерминированно
+        long cs = Double.doubleToLongBits(seedMix)
+                ^ ((long) ax * 982451653L)
+                ^ ((long) az * 718364721L)
+                ^ ((long) ay * 123456789L);
+        Random rng = new Random(cs);
 
-        int variant = rng.nextInt(3);
-        int[][] blocks = ALL_PALMS[variant];
+        int v = rng.nextInt(3);
+        int[][] blocks = ALL[v];
 
+        // ставим блоки — листья и ствол
+        // setBlock с флагом 2 = UPDATE_NEIGHBORS | UPDATE_CLIENTS
+        // без этого клиент не увидит изменения
         for (int[] b : blocks) {
-            int dx = b[0], dy = b[1], dz = b[2], isLeaf = b[3];
-            int wx = anchorX + dx;
-            int wy = baseY + dy;
-            int wz = anchorZ + dz;
-
-            BlockState state = isLeaf == 1 ? LEAF_STATE : WOOD_STATE;
-            BlockPos pos = new BlockPos(wx, wy, wz);
-            level.setBlock(pos, state, 2);
+            int dx = b[0], dy = b[1], dz = b[2], leaf = b[3];
+            BlockState st = leaf == 1 ? LEAF : WOOD;
+            level.setBlock(new BlockPos(ax + dx, ay + dy, az + dz), st, 2);
         }
     }
 }
