@@ -1,9 +1,9 @@
 package com.jokerdayn.swworldgencore.worldgen;
 
+import com.jokerdayn.swworldgencore.SWWorldgenCore;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.WorldGenLevel;
 import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.block.LeavesBlock;
 import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.Random;
@@ -12,12 +12,8 @@ public final class PalmGenerator {
 
     private PalmGenerator() {}
 
-    // persistent=true чтобы листва не декеилась
-    // иначе через несколько дней пальмы останутся голые
-    // это важно — игроки будут жаловаться
-    private static final BlockState LEAF = Blocks.JUNGLE_LEAVES.defaultBlockState()
-            .setValue(LeavesBlock.PERSISTENT, true);
-    private static final BlockState WOOD = Blocks.JUNGLE_WOOD.defaultBlockState();
+    private static final BlockState PALM_BLOCK = SWWorldgenCore.PALM.get().defaultBlockState();
+    private static final BlockState PALM_LEAF = SWWorldgenCore.PALM_LEAF.get().defaultBlockState();
 
     // хардкод координат из .nbt файлов
     // structure templates не работают из кастомного ChunkGenerator
@@ -168,7 +164,7 @@ public final class PalmGenerator {
         // без этого клиент не увидит изменения
         for (int[] b : blocks) {
             int dx = b[0], dy = b[1], dz = b[2], leaf = b[3];
-            BlockState st = leaf == 1 ? LEAF : WOOD;
+            BlockState st = leaf == 1 ? PALM_LEAF : PALM_BLOCK;
             level.setBlock(new BlockPos(ax + dx, ay + dy, az + dz), st, 2);
         }
     }

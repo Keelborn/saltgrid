@@ -27,6 +27,8 @@ import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import com.jokerdayn.swworldgencore.block.ShellBlock;
+import com.jokerdayn.swworldgencore.block.PalmBlock;
+import com.jokerdayn.swworldgencore.block.PalmLeafBlock;
 import com.jokerdayn.swworldgencore.worldgen.OceanChunkGenerator;
 
 import java.util.function.Supplier;
@@ -43,6 +45,16 @@ public class SWWorldgenCore {
         () -> new ShellBlock(BlockBehaviour.Properties.of().strength(0.1f).noOcclusion().noCollission().pushReaction(net.minecraft.world.level.material.PushReaction.DESTROY)));
     public static final DeferredHolder<Item, BlockItem> SHELL_ITEM = ITEMS.register("shell",
         () -> new BlockItem(SHELL.get(), new Item.Properties()));
+
+    public static final DeferredBlock<PalmBlock> PALM = BLOCKS.register("palm",
+        () -> new PalmBlock(BlockBehaviour.Properties.of().strength(2.0f).sound(net.minecraft.world.level.block.SoundType.WOOD)));
+    public static final DeferredHolder<Item, BlockItem> PALM_ITEM = ITEMS.register("palm",
+        () -> new BlockItem(PALM.get(), new Item.Properties()));
+
+    public static final DeferredBlock<PalmLeafBlock> PALM_LEAF = BLOCKS.register("palm_leaf",
+        () -> new PalmLeafBlock(BlockBehaviour.Properties.of().strength(0.3f).sound(net.minecraft.world.level.block.SoundType.GRASS).noOcclusion()));
+    public static final DeferredHolder<Item, BlockItem> PALM_LEAF_ITEM = ITEMS.register("palm_leaf",
+        () -> new BlockItem(PALM_LEAF.get(), new Item.Properties()));
 
     // хеш тот же что в OceanChunkGenerator — дублируем для команды
     private static long cmdSeed = 0;
