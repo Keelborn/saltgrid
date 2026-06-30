@@ -2,8 +2,8 @@
 	"format_version": "1.21.6",
 	"credit": "Made with Blockbench",
 	"textures": {
-		"0": "rocks:block/starfish_orange",
-		"particle": "rocks:block/starfish_orange"
+		"0": "swworldgencore:block/starfish_orange",
+		"particle": "swworldgencore:block/starfish_orange"
 	},
 	"elements": [
 		{

@@ -29,6 +29,7 @@ import net.minecraft.world.item.Item;
 import com.jokerdayn.swworldgencore.block.ShellBlock;
 import com.jokerdayn.swworldgencore.block.PalmBlock;
 import com.jokerdayn.swworldgencore.block.PalmLeafBlock;
+import com.jokerdayn.swworldgencore.block.GroundDecorationBlock;
 import com.jokerdayn.swworldgencore.worldgen.OceanChunkGenerator;
 
 import java.util.function.Supplier;
@@ -55,6 +56,11 @@ public class SWWorldgenCore {
         () -> new PalmLeafBlock(BlockBehaviour.Properties.of().strength(0.3f).sound(net.minecraft.world.level.block.SoundType.GRASS).noOcclusion()));
     public static final DeferredHolder<Item, BlockItem> PALM_LEAF_ITEM = ITEMS.register("palm_leaf",
         () -> new BlockItem(PALM_LEAF.get(), new Item.Properties()));
+
+    public static final DeferredBlock<GroundDecorationBlock> GROUND_DECO = BLOCKS.register("ground_decoration",
+        () -> new GroundDecorationBlock(BlockBehaviour.Properties.of().strength(0.2f).noOcclusion().noCollission().pushReaction(net.minecraft.world.level.material.PushReaction.DESTROY)));
+    public static final DeferredHolder<Item, BlockItem> GROUND_DECO_ITEM = ITEMS.register("ground_decoration",
+        () -> new BlockItem(GROUND_DECO.get(), new Item.Properties()));
 
     // хеш тот же что в OceanChunkGenerator — дублируем для команды
     private static long cmdSeed = 0;

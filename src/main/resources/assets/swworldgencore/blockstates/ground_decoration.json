@@ -1,0 +1,70 @@
+{
+	"variants": {
+		"variant=rock_tiny": [
+			{"model": "swworldgencore:block/tiny_rock"},
+			{"model": "swworldgencore:block/tiny_rock", "y": 90},
+			{"model": "swworldgencore:block/tiny_rock", "y": 180},
+			{"model": "swworldgencore:block/tiny_rock", "y": 270}
+		],
+		"variant=rock_small": [
+			{"model": "swworldgencore:block/small_rock"},
+			{"model": "swworldgencore:block/small_rock", "y": 90},
+			{"model": "swworldgencore:block/small_rock", "y": 180},
+			{"model": "swworldgencore:block/small_rock", "y": 270}
+		],
+		"variant=rock_medium": [
+			{"model": "swworldgencore:block/medium_rock"},
+			{"model": "swworldgencore:block/medium_rock", "y": 90},
+			{"model": "swworldgencore:block/medium_rock", "y": 180},
+			{"model": "swworldgencore:block/medium_rock", "y": 270}
+		],
+		"variant=rock_large": [
+			{"model": "swworldgencore:block/large_rock"},
+			{"model": "swworldgencore:block/large_rock", "y": 90},
+			{"model": "swworldgencore:block/large_rock", "y": 180},
+			{"model": "swworldgencore:block/large_rock", "y": 270}
+		],
+		"variant=stick_small": [
+			{"model": "swworldgencore:block/small_stick"},
+			{"model": "swworldgencore:block/small_stick", "y": 90},
+			{"model": "swworldgencore:block/small_stick", "y": 180},
+			{"model": "swworldgencore:block/small_stick", "y": 270}
+		],
+		"variant=stick_medium": [
+			{"model": "swworldgencore:block/medium_stick"},
+			{"model": "swworldgencore:block/medium_stick", "y": 90},
+			{"model": "swworldgencore:block/medium_stick", "y": 180},
+			{"model": "swworldgencore:block/medium_stick", "y": 270}
+		],
+		"variant=stick_large": [
+			{"model": "swworldgencore:block/large_stick"},
+			{"model": "swworldgencore:block/large_stick", "y": 90},
+			{"model": "swworldgencore:block/large_stick", "y": 180},
+			{"model": "swworldgencore:block/large_stick", "y": 270}
+		],
+		"variant=starfish_red": [
+			{"model": "swworldgencore:block/starfish_red"},
+			{"model": "swworldgencore:block/starfish_red", "y": 90},
+			{"model": "swworldgencore:block/starfish_red", "y": 180},
+			{"model": "swworldgencore:block/starfish_red", "y": 270}
+		],
+		"variant=starfish_pink": [
+			{"model": "swworldgencore:block/starfish_pink"},
+			{"model": "swworldgencore:block/starfish_pink", "y": 90},
+			{"model": "swworldgencore:block/starfish_pink", "y": 180},
+			{"model": "swworldgencore:block/starfish_pink", "y": 270}
+		],
+		"variant=starfish_orange": [
+			{"model": "swworldgencore:block/starfish_orange"},
+			{"model": "swworldgencore:block/starfish_orange", "y": 90},
+			{"model": "swworldgencore:block/starfish_orange", "y": 180},
+			{"model": "swworldgencore:block/starfish_orange", "y": 270}
+		],
+		"variant=pinecone": [
+			{"model": "swworldgencore:block/pinecone"},
+			{"model": "swworldgencore:block/pinecone", "y": 90},
+			{"model": "swworldgencore:block/pinecone", "y": 180},
+			{"model": "swworldgencore:block/pinecone", "y": 270}
+		]
+	}
+}

@@ -1,8 +1,10 @@
 {
-  "itemGroup.swworldgencore": "Example Mod Tab",
-  "block.swworldgencore.example_block": "Example Block",
-  "item.swworldgencore.example_item": "Example Item",
+  "itemGroup.swworldgencore": "SW Worldgen",
+
   "block.swworldgencore.shell": "Seashell",
+  "block.swworldgencore.palm": "Palm Log",
+  "block.swworldgencore.palm_leaf": "Palm Leaves",
+  "block.swworldgencore.ground_decoration": "Ground Decoration",
 
   "swworldgencore.configuration.title": "SW: Worldgen Core Configs",
   "swworldgencore.configuration.section.swworldgencore.common.toml": "SW: Worldgen Core Configs",
