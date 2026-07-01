@@ -1,3 +1,6 @@
 {
-    "parent": "swworldgencore:block/palm_leaf"
+	"parent": "item/handheld",
+	"textures": {
+		"layer0": "swworldgencore:block/palmleaf"
+	}
 }

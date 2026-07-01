@@ -1,3 +1,6 @@
 {
-	"parent": "swworldgencore:block/tiny_rock"
+	"parent": "item/generated",
+	"textures": {
+		"layer0": "swworldgencore:block/small_rock"
+	}
 }

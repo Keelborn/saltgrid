@@ -1,3 +1,6 @@
 {
-	"parent": "swworldgencore:block/seashell_yellow"
+	"parent": "item/generated",
+	"textures": {
+		"layer0": "swworldgencore:block/seashell"
+	}
 }
