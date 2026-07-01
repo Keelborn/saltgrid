@@ -32,7 +32,7 @@
 		],
 		"variant=stick_medium": [
 			{"model": "swworldgencore:block/medium_stick"},
-			{"model": "wworldgencore:block/medium_stick", "y": 90},
+			{"model": "swworldgencore:block/medium_stick", "y": 90},
 			{"model": "swworldgencore:block/medium_stick", "y": 180},
 			{"model": "swworldgencore:block/medium_stick", "y": 270}
 		],
@@ -41,18 +41,6 @@
 			{"model": "swworldgencore:block/large_stick", "y": 90},
 			{"model": "swworldgencore:block/large_stick", "y": 180},
 			{"model": "swworldgencore:block/large_stick", "y": 270}
-		],
-		"variant=starfish_red": [
-			{"model": "swworldgencore:block/starfish_red"},
-			{"model": "swworldgencore:block/starfish_red", "y": 90},
-			{"model": "swworldgencore:block/starfish_red", "y": 180},
-			{"model": "swworldgencore:block/starfish_red", "y": 270}
-		],
-		"variant=starfish_orange": [
-			{"model": "swworldgencore:block/starfish_orange"},
-			{"model": "swworldgencore:block/starfish_orange", "y": 90},
-			{"model": "swworldgencore:block/starfish_orange", "y": 180},
-			{"model": "swworldgencore:block/starfish_orange", "y": 270}
 		]
 	}
 }
