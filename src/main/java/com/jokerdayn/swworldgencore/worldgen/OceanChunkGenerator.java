@@ -640,7 +640,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 }
 
                 // Наземная декорация на любом блоке суши
-                if (hsh(wx * 61, wz * 67) < 0.02) {
+                if (hsh(wx * 61, wz * 67) < 0.01) {
                     BlockPos above = new BlockPos(wx, fl + 1, wz);
                     if (level.getBlockState(above).isAir()) {
                         GroundDecorationBlock.Type[] types = GroundDecorationBlock.Type.values();

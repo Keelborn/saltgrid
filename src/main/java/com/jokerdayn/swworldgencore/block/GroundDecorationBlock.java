@@ -17,13 +17,12 @@ public class GroundDecorationBlock extends Block {
     private static final VoxelShape ROCK_LARGE = Block.box(1, 0, 3, 13, 4, 12);
     private static final VoxelShape STICK = Block.box(0, 0, 0, 10, 1, 2);
     private static final VoxelShape STARFISH = Block.box(5, 0, 0, 15, 1, 11);
-    private static final VoxelShape PINECONE = Block.box(5, 0, 6, 8, 9, 9);
 
     public enum Type implements net.minecraft.util.StringRepresentable {
         ROCK_TINY("rock_tiny"), ROCK_SMALL("rock_small"), ROCK_MEDIUM("rock_medium"),
         ROCK_LARGE("rock_large"), STICK_SMALL("stick_small"), STICK_MEDIUM("stick_medium"),
-        STICK_LARGE("stick_large"), STARFISH_RED("starfish_red"), STARFISH_PINK("starfish_pink"),
-        STARFISH_ORANGE("starfish_orange"), PINECONE("pinecone");
+        STICK_LARGE("stick_large"), STARFISH_RED("starfish_red"),
+        STARFISH_ORANGE("starfish_orange");
 
         private final String name;
         Type(String name) { this.name = name; }
@@ -49,8 +48,7 @@ public class GroundDecorationBlock extends Block {
             case ROCK_MEDIUM -> ROCK_MEDIUM;
             case ROCK_LARGE -> ROCK_LARGE;
             case STICK_SMALL, STICK_MEDIUM, STICK_LARGE -> STICK;
-            case STARFISH_RED, STARFISH_PINK, STARFISH_ORANGE -> STARFISH;
-            case PINECONE -> PINECONE;
+            case STARFISH_RED, STARFISH_ORANGE -> STARFISH;
         };
     }
 }
