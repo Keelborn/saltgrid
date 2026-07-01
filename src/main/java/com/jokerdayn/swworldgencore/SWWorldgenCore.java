@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import com.mojang.logging.LogUtils;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
@@ -31,8 +32,6 @@ import com.jokerdayn.swworldgencore.block.PalmBlock;
 import com.jokerdayn.swworldgencore.block.PalmLeafBlock;
 import com.jokerdayn.swworldgencore.block.GroundDecorationBlock;
 import com.jokerdayn.swworldgencore.worldgen.OceanChunkGenerator;
-
-import java.util.function.Supplier;
 
 @Mod(SWWorldgenCore.MODID)
 public class SWWorldgenCore {
@@ -62,10 +61,7 @@ public class SWWorldgenCore {
     public static final DeferredHolder<Item, BlockItem> GROUND_DECO_ITEM = ITEMS.register("ground_decoration",
         () -> new BlockItem(GROUND_DECO.get(), new Item.Properties()));
 
-    // хеш тот же что в OceanChunkGenerator — дублируем для команды
-    private static long cmdSeed = 0;
-
-    public static void setSeed(long s) { cmdSeed = s; }
+    // seed теперь берётся из ChunkGenerator, cmdSeed больше не нужен
 
     public SWWorldgenCore(IEventBus modEventBus, ModContainer modContainer) {
         BLOCKS.register(modEventBus);
@@ -84,12 +80,11 @@ public class SWWorldgenCore {
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {
-        LOGGER.info("HELLO FROM COMMON SETUP");
+        LOGGER.info("swworldgencore loaded");
     }
 
     @SubscribeEvent
     public void onServerStarting(ServerStartingEvent event) {
-        LOGGER.info("HELLO from server starting");
     }
 
     @SubscribeEvent
@@ -99,6 +94,16 @@ public class SWWorldgenCore {
             ServerPlayer player = ctx.getSource().getPlayerOrException();
             int px = (int) player.getX(), pz = (int) player.getZ();
 
+            // Получаем seed из текущего ChunkGenerator
+            net.minecraft.server.level.ServerLevel serverLevel =
+                    player.getServer().getLevel(player.level().dimension());
+            net.minecraft.world.level.chunk.ChunkGenerator gen =
+                    serverLevel.getChunkSource().getGenerator();
+            long worldSeed = 0;
+            if (gen instanceof OceanChunkGenerator oceanGen) {
+                worldSeed = oceanGen.getSeed();
+            }
+
             int[] best = {0, 0};
             double bestDist = Double.MAX_VALUE;
 
@@ -107,10 +112,10 @@ public class SWWorldgenCore {
             for (int dx = -1; dx <= 1; dx++) {
                 for (int dz = -1; dz <= 1; dz++) {
                     int cx = cellX + dx, cz = cellZ + dz;
-                    if (hash(cx * 11, cz * 13) > 0.6) continue;
+                    if (hash(cx * 11, cz * 13, worldSeed) > 0.6) continue;
 
-                    int ix = cx * 2048 + 768 + (int)(hash(cx * 2, cz * 2) * 512);
-                    int iz = cz * 2048 + 768 + (int)(hash(cx * 2 + 1, cz * 2 + 1) * 512);
+                    int ix = cx * 2048 + 768 + (int)(hash(cx * 2, cz * 2, worldSeed) * 512);
+                    int iz = cz * 2048 + 768 + (int)(hash(cx * 2 + 1, cz * 2 + 1, worldSeed) * 512);
 
                     double dist = Math.pow(ix - px, 2) + Math.pow(iz - pz, 2);
                     if (dist < bestDist) {
@@ -122,14 +127,18 @@ public class SWWorldgenCore {
             }
 
             int fx = best[0], fz = best[1];
-            player.teleportTo(fx + 0.5, 70, fz + 0.5);
-            ctx.getSource().sendSuccess(() -> Component.literal("Island at " + fx + " " + fz), false);
+            // Используем getBaseHeight вместо heightmap — работает даже на несгенерированных чанках
+            int surfaceY = gen.getBaseHeight(fx, fz,
+                    net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING,
+                    serverLevel, null) + 1;
+            player.teleportTo(fx + 0.5, surfaceY, fz + 0.5);
+            ctx.getSource().sendSuccess(() -> Component.literal("Island at " + fx + " " + fz + " y=" + surfaceY), false);
             return 1;
         }));
     }
 
-    private static double hash(int x, int z) {
-        long n = (long) x * 73856093L ^ (long) z * 19349663L ^ cmdSeed;
+    private static double hash(int x, int z, long seed) {
+        long n = (long) x * 73856093L ^ (long) z * 19349663L ^ seed;
         n = (n ^ (n >> 13)) * 1274126177L;
         n = n ^ (n >> 16);
         return (double) (n & 0x7FFFFFFFL) / (double) 0x7FFFFFFFL;

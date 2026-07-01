@@ -148,8 +148,6 @@ public final class PalmGenerator {
         BlockState below = level.getBlockState(new BlockPos(ax, ay - 1, az));
         if (!below.is(Blocks.SAND)) return;
 
-        // генерируем seed из координат + seedMix
-        // если переделать на обычный Random — будет недетерминированно
         long cs = Double.doubleToLongBits(seedMix)
                 ^ ((long) ax * 982451653L)
                 ^ ((long) az * 718364721L)
@@ -159,13 +157,13 @@ public final class PalmGenerator {
         int v = rng.nextInt(3);
         int[][] blocks = ALL[v];
 
-        // ставим блоки — листья и ствол
-        // setBlock с флагом 2 = UPDATE_NEIGHBORS | UPDATE_CLIENTS
-        // без этого клиент не увидит изменения
+        // Используем MutableBlockPos вместо new BlockPos в цикле
+        BlockPos.MutableBlockPos mPos = new BlockPos.MutableBlockPos();
         for (int[] b : blocks) {
             int dx = b[0], dy = b[1], dz = b[2], leaf = b[3];
             BlockState st = leaf == 1 ? PALM_LEAF : PALM_BLOCK;
-            level.setBlock(new BlockPos(ax + dx, ay + dy, az + dz), st, 2);
+            mPos.set(ax + dx, ay + dy, az + dz);
+            level.setBlock(mPos, st, 2);
         }
     }
 }

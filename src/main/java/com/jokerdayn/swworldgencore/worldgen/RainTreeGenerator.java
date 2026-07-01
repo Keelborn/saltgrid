@@ -126,19 +126,22 @@ public final class RainTreeGenerator {
         int v = rng.nextInt(3);
         int[][] blocks = ALL[v];
 
+        // Используем MutableBlockPos вместо new BlockPos в цикле
+        BlockPos.MutableBlockPos mPos = new BlockPos.MutableBlockPos();
         for (int[] b : blocks) {
             int dx = b[0], dy = b[1], dz = b[2], leaf = b[3];
             BlockState st = leaf == 1 ? WOOD : LEAF;
-            level.setBlock(new BlockPos(ax + dx, ay + dy, az + dz), st, 2);
+            mPos.set(ax + dx, ay + dy, az + dz);
+            level.setBlock(mPos, st, 2);
         }
 
         // vines on exposed faces
         for (int[] b : blocks) {
             int dx = b[0], dy = b[1], dz = b[2];
-            BlockPos bp = new BlockPos(ax + dx, ay + dy, az + dz);
+            mPos.set(ax + dx, ay + dy, az + dz);
             for (Direction dir : Direction.Plane.HORIZONTAL) {
                 if (rng.nextDouble() > 0.22) continue;
-                BlockPos nb = bp.relative(dir);
+                BlockPos nb = mPos.relative(dir);
                 if (!level.getBlockState(nb).isAir()) continue;
                 BooleanProperty prop = VineBlock.getPropertyForFace(dir.getOpposite());
                 level.setBlock(nb, Blocks.VINE.defaultBlockState().setValue(prop, true), 2);
