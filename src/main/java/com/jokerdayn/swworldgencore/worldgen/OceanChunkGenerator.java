@@ -660,7 +660,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                     // Дерево
                     if (level.getBlockState(above).isAir()
                             && !nearTree(level, wx, fl + 1, wz, 5)) {
-                        RainTreeGenerator.tryPlace(level, wx, fl, wz, hsh(wx * 53, wz * 67));
+                        AcaciaGenerator.tryPlace(level, wx, fl, wz, hsh(wx * 53, wz * 67));
                     }
                 } else if (r < 0.45) {
                     // Трава

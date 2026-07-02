@@ -2,8 +2,6 @@
   "itemGroup.swworldgencore": "SW Worldgen",
 
   "block.swworldgencore.shell": "Seashell",
-  "block.swworldgencore.palm": "Palm Log",
-  "block.swworldgencore.palm_leaf": "Palm Leaves",
   "block.swworldgencore.ground_decoration": "Ground Decoration",
 
   "swworldgencore.configuration.title": "SW: Worldgen Core Configs",

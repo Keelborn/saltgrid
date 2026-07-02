@@ -1,8 +1,0 @@
-{
-	"variants": {
-		"facing=north": {"model": "swworldgencore:block/palm"},
-		"facing=south": {"model": "swworldgencore:block/palm", "y": 180},
-		"facing=west": {"model": "swworldgencore:block/palm", "y": 270},
-		"facing=east": {"model": "swworldgencore:block/palm", "y": 90}
-	}
-}

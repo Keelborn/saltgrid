@@ -1,6 +1,5 @@
 package com.jokerdayn.swworldgencore.worldgen;
 
-import com.jokerdayn.swworldgencore.SWWorldgenCore;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.WorldGenLevel;
 import net.minecraft.world.level.block.Blocks;
@@ -12,8 +11,8 @@ public final class PalmGenerator {
 
     private PalmGenerator() {}
 
-    private static final BlockState PALM_BLOCK = SWWorldgenCore.PALM.get().defaultBlockState();
-    private static final BlockState PALM_LEAF = SWWorldgenCore.PALM_LEAF.get().defaultBlockState();
+    private static final BlockState PALM_BLOCK = Blocks.JUNGLE_WOOD.defaultBlockState();
+    private static final BlockState PALM_LEAF = Blocks.JUNGLE_LEAVES.defaultBlockState();
 
     // хардкод координат из .nbt файлов
     // structure templates не работают из кастомного ChunkGenerator

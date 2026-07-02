@@ -11,11 +11,11 @@ import net.minecraft.world.level.block.state.properties.BooleanProperty;
 
 import java.util.Random;
 
-public final class RainTreeGenerator {
+public final class AcaciaGenerator {
 
-    private RainTreeGenerator() {}
+    private AcaciaGenerator() {}
 
-    private static final BlockState LEAF = Blocks.JUNGLE_LEAVES.defaultBlockState()
+    private static final BlockState LEAF = Blocks.ACACIA_LEAVES.defaultBlockState()
             .setValue(LeavesBlock.PERSISTENT, true);
     private static final BlockState WOOD = Blocks.OAK_WOOD.defaultBlockState();
 
