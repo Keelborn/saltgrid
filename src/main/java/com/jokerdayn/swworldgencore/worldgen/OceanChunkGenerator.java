@@ -45,7 +45,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
     private static final int BASE_FLOOR = 25;
 
     private static final double SPAWN_ISLAND_RADIUS = 170.0;
-    private static final double SPAWN_ISLAND_FEATHER = 60.0;
+    private static final double SPAWN_ISLAND_FEATHER = 120.0;
     private static final int SPAWN_ISLAND_MAX_HEIGHT = 18;
 
     public static final MapCodec<OceanChunkGenerator> CODEC = RecordCodecBuilder.mapCodec(instance ->
@@ -352,9 +352,11 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
         // --- grid-острова ---
         double gridH = gridIslandH(x, z);
-        if (gridH > 0.5) {
+        if (gridH > 0.01) {
             int gridFloor = Math.max(oceanFloor, seaLevel + (int) Math.round(gridH));
-            return gridFloor;
+            double blend = Mth.clamp(gridH / 3.0, 0.0, 1.0);
+            blend = blend * blend * (3.0 - 2.0 * blend);
+            return (int) Math.round(oceanFloor + (gridFloor - oceanFloor) * blend);
         }
 
         return oceanFloor;
@@ -550,7 +552,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                             chunk.setBlockState(at, Blocks.WATER.defaultBlockState(), false);
                         }
 
-                    } else if (y < seaLevel && fl < seaLevel) {
+                    } else if (y <= seaLevel && fl < seaLevel) {
                         chunk.setBlockState(at, Blocks.WATER.defaultBlockState(), false);
                     }
                 }
@@ -806,7 +808,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                     col[y - minY] = Blocks.WATER.defaultBlockState();
                 }
 
-            } else if (y < seaLevel && fl < seaLevel) {
+            } else if (y <= seaLevel && fl < seaLevel) {
                 col[y - minY] = Blocks.WATER.defaultBlockState();
 
             } else {

@@ -30,6 +30,8 @@ import net.minecraft.world.item.Item;
 import com.jokerdayn.swworldgencore.block.ShellBlock;
 
 import com.jokerdayn.swworldgencore.block.GroundDecorationBlock;
+import com.jokerdayn.swworldgencore.block.PalmSaplingBlock;
+import com.jokerdayn.swworldgencore.block.PalmLeafBlock;
 import com.jokerdayn.swworldgencore.worldgen.OceanChunkGenerator;
 
 @Mod(SWWorldgenCore.MODID)
@@ -50,7 +52,15 @@ public class SWWorldgenCore {
     public static final DeferredHolder<Item, BlockItem> GROUND_DECO_ITEM = ITEMS.register("ground_decoration",
         () -> new BlockItem(GROUND_DECO.get(), new Item.Properties()));
 
-    // seed теперь берётся из ChunkGenerator, cmdSeed больше не нужен
+    public static final DeferredBlock<PalmSaplingBlock> PALM_SAPLING = BLOCKS.register("palm_sapling",
+        () -> new PalmSaplingBlock(BlockBehaviour.Properties.of().noCollission().randomTicks().instabreak().sound(net.minecraft.world.level.block.SoundType.GRASS)));
+    public static final DeferredHolder<Item, BlockItem> PALM_SAPLING_ITEM = ITEMS.register("palm_sapling",
+        () -> new BlockItem(PALM_SAPLING.get(), new Item.Properties()));
+
+    public static final DeferredBlock<PalmLeafBlock> PALM_LEAF = BLOCKS.register("palm_leaf",
+        () -> new PalmLeafBlock(BlockBehaviour.Properties.of().strength(0.2f).noOcclusion().randomTicks().sound(net.minecraft.world.level.block.SoundType.GRASS)));
+    public static final DeferredHolder<Item, BlockItem> PALM_LEAF_ITEM = ITEMS.register("palm_leaf",
+        () -> new BlockItem(PALM_LEAF.get(), new Item.Properties()));
 
     public SWWorldgenCore(IEventBus modEventBus, ModContainer modContainer) {
         BLOCKS.register(modEventBus);

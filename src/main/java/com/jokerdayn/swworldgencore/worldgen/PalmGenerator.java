@@ -4,6 +4,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.WorldGenLevel;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import com.jokerdayn.swworldgencore.SWWorldgenCore;
 
 import java.util.Random;
 
@@ -12,7 +13,7 @@ public final class PalmGenerator {
     private PalmGenerator() {}
 
     private static final BlockState PALM_BLOCK = Blocks.JUNGLE_WOOD.defaultBlockState();
-    private static final BlockState PALM_LEAF = Blocks.JUNGLE_LEAVES.defaultBlockState();
+    private static BlockState PALM_LEAF = null;
 
     // хардкод координат из .nbt файлов
     // structure templates не работают из кастомного ChunkGenerator
@@ -144,6 +145,9 @@ public final class PalmGenerator {
     // seedMix используется для выбора варианта и поворота
     // это даёт детерминированный результат для одной точки
     public static void tryPlacePalm(WorldGenLevel level, int ax, int ay, int az, double seedMix) {
+        if (PALM_LEAF == null) {
+            PALM_LEAF = SWWorldgenCore.PALM_LEAF.get().defaultBlockState();
+        }
         BlockState below = level.getBlockState(new BlockPos(ax, ay - 1, az));
         if (!below.is(Blocks.SAND)) return;
 

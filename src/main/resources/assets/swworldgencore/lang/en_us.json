@@ -3,6 +3,8 @@
 
   "block.swworldgencore.shell": "Seashell",
   "block.swworldgencore.ground_decoration": "Ground Decoration",
+  "block.swworldgencore.palm_sapling": "Palm Sapling",
+  "block.swworldgencore.palm_leaf": "Palm Leaves",
 
   "swworldgencore.configuration.title": "SW: Worldgen Core Configs",
   "swworldgencore.configuration.section.swworldgencore.common.toml": "SW: Worldgen Core Configs",
