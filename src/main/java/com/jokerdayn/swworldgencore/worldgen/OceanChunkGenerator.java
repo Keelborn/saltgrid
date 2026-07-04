@@ -56,17 +56,29 @@ public class OceanChunkGenerator extends ChunkGenerator {
             ).apply(instance, OceanChunkGenerator::new)
     );
 
-    private final long seed;
+    private long seed;
     private final int seaLevel;
 
     public OceanChunkGenerator(BiomeSource biomeSource, long seed, int seaLevel) {
         super(biomeSource);
         this.seed = seed;
         this.seaLevel = seaLevel;
+        log.info("[OceanChunkGenerator] Created with seed={}", seed);
     }
 
     public long getSeed() {
         return seed;
+    }
+
+    // Подхватываем реальный seed мира, потому что dimension JSON содержит seed=0
+    private void syncSeedFromLevel(WorldGenLevel level) {
+        if (seed == 0 && level != null) {
+            long worldSeed = level.getSeed();
+            if (worldSeed != 0) {
+                seed = worldSeed;
+                log.info("[OceanChunkGenerator] Synced seed from world: {}", seed);
+            }
+        }
     }
 
     @Override
@@ -229,8 +241,10 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 double edge = Mth.clamp(1.0 - t, 0.0, 1.0);
                 double falloff = edge * edge * (3.0 - 2.0 * edge);
 
+                double s = seed * 0.001;
+
                 // холмистый рельеф
-                double hill = fbm(x * 0.008 + cx * 31.0, z * 0.008 + cz * 47.0, 3, 2.0, 0.55);
+                double hill = fbm(x * 0.008 + cx * 31.0 + s * 1.5, z * 0.008 + cz * 47.0 - s * 0.8, 3, 2.0, 0.55);
                 hill = Mth.clamp((hill - 0.15) / 0.7, 0.0, 1.0);
                 hill = hill * hill * (3.0 - 2.0 * hill);
 
@@ -238,7 +252,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
                 // гора (ridgeline) для некоторых ячеек
                 if (mtnChance < 0.25) {
-                    double mtnR = ridgeNoise(x * 0.012 + cx * 53.0, z * 0.014 + cz * 67.0, 4, 2.0, 0.55);
+                    double mtnR = ridgeNoise(x * 0.012 + cx * 53.0 + s * 2.0, z * 0.014 + cz * 67.0 - s * 1.3, 4, 2.0, 0.55);
                     mtnR = Math.pow(mtnR, 0.5);
                     double mtnMask = Mth.clamp(1.0 - d / (radius * 0.6), 0.0, 1.0);
                     mtnMask = mtnMask * mtnMask;
@@ -459,8 +473,25 @@ public class OceanChunkGenerator extends ChunkGenerator {
                                                         StructureManager structureManager, ChunkAccess chunk) {
         long startTime = System.nanoTime();
 
+        // Подхватываем реальный seed мира
+        if (chunk.getLevel() instanceof WorldGenLevel wgl) {
+            syncSeedFromLevel(wgl);
+        }
+
         ChunkPos cp = chunk.getPos();
         int cx = cp.x, cz = cp.z;
+
+        // Дебаг: логируем высоту в центре мира (0,0) для первого чанка
+        if (cx == 0 && cz == 0 && chunkCount == 0) {
+            double st0 = islandDist(0, 0);
+            double sp0 = islandH(0, 0, st0);
+            double gH0 = gridIslandH(0, 0);
+            double gDist0 = gridIslandDist(0, 0);
+            int fl0 = computeFloor(0, 0, st0, sp0);
+            log.info("[DEBUG] seed={} spawnDist={} spawnH={} gridH={} gridDist={} floor={}",
+                    seed, String.format("%.4f", st0), String.format("%.4f", sp0),
+                    String.format("%.4f", gH0), String.format("%.4f", gDist0), fl0);
+        }
 
         // Кэш 18×18 (16 блоков чанка + 1 с каждой стороны для проверки склонов)
         int[][]    heights = new int[18][18];
@@ -604,6 +635,8 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
     @Override
     public void applyBiomeDecoration(WorldGenLevel level, ChunkAccess chunk, StructureManager structureManager) {
+        syncSeedFromLevel(level);
+
         ChunkPos cp = chunk.getPos();
         int cx = cp.x, cz = cp.z;
 
@@ -733,6 +766,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
     @Override
     public int getBaseHeight(int x, int z, Heightmap.Types heightmapType,
                              LevelHeightAccessor level, RandomState random) {
+        if (level instanceof WorldGenLevel wgl) syncSeedFromLevel(wgl);
         // Упрощено: без проверки склонов (экономит 4 вызова computeFloor на блок)
         // Слоупы обрабатываются в fillFromNoise через кэш 18x18
         double st    = islandDist(x, z);
