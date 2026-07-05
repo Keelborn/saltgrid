@@ -170,6 +170,37 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
     // расстояние от (x,z) до ближайшего grid-острова (нормализовано 0..1)
     // 0 = центр острова, 1 = край, >1 = за пределами
+
+    /**
+     * Поиск ближайшего центра grid-острова от позиции (px, pz).
+     * Возвращает {x, z} центра острова. Используется командой /island.
+     */
+    public int[] findNearestIslandCenter(int px, int pz) {
+        int cellX = Math.floorDiv(px, CELL);
+        int cellZ = Math.floorDiv(pz, CELL);
+
+        int[] best = {px, pz};
+        double bestDistSq = Double.MAX_VALUE;
+
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                int cx = cellX + dx, cz = cellZ + dz;
+                if (hsh(cx * 11, cz * 13) > 0.6) continue;
+
+                int ix = cx * CELL + 768 + (int)(hsh(cx * 2, cz * 2) * 512);
+                int iz = cz * CELL + 768 + (int)(hsh(cx * 2 + 1, cz * 2 + 1) * 512);
+
+                double dSq = (double)(ix - px) * (ix - px) + (double)(iz - pz) * (iz - pz);
+                if (dSq < bestDistSq) {
+                    bestDistSq = dSq;
+                    best[0] = ix;
+                    best[1] = iz;
+                }
+            }
+        }
+        return best;
+    }
+
     private double gridIslandDist(int x, int z) {
         int cellX = Math.floorDiv(x, CELL);
         int cellZ = Math.floorDiv(z, CELL);
@@ -342,6 +373,10 @@ public class OceanChunkGenerator extends ChunkGenerator {
     // -------------------------------------------------------------------------
 
     private int computeFloor(int x, int z, double t, double spRaw) {
+        return computeFloor(x, z, t, spRaw, gridIslandH(x, z));
+    }
+
+    private int computeFloor(int x, int z, double t, double spRaw, double gridH) {
         double s = seed * 0.001;
         double wx = x + fbm(x * 0.005 + s * 1.0,        z * 0.005 - s * 0.5,        2, 2.0, 0.5) * 50;
         double wz = z + fbm(x * 0.005 + 31.7 - s * 0.8, z * 0.005 + 47.3 + s * 1.2, 2, 2.0, 0.5) * 50;
@@ -365,7 +400,6 @@ public class OceanChunkGenerator extends ChunkGenerator {
         }
 
         // --- grid-острова ---
-        double gridH = gridIslandH(x, z);
         if (gridH > 0.01) {
             int gridFloor = Math.max(oceanFloor, seaLevel + (int) Math.round(gridH));
             double blend = Mth.clamp(gridH / 3.0, 0.0, 1.0);
@@ -497,15 +531,18 @@ public class OceanChunkGenerator extends ChunkGenerator {
         int[][]    heights = new int[18][18];
         double[][] dists   = new double[18][18];
         double[][] islands = new double[18][18];
+        double[][] grids   = new double[18][18];
 
         for (int lx = -1; lx <= 16; lx++) {
             for (int lz = -1; lz <= 16; lz++) {
                 int    wx    = cx * 16 + lx, wz = cz * 16 + lz;
                 double st    = islandDist(wx, wz);
                 double spRaw = islandH(wx, wz, st);
+                double gridH = gridIslandH(wx, wz);
                 dists  [lx + 1][lz + 1] = st;
                 islands[lx + 1][lz + 1] = spRaw;
-                heights[lx + 1][lz + 1] = computeFloor(wx, wz, st, spRaw);
+                grids  [lx + 1][lz + 1] = gridH;
+                heights[lx + 1][lz + 1] = computeFloor(wx, wz, st, spRaw, gridH);
             }
         }
 
@@ -517,6 +554,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 int    fl    = heights[lx + 1][lz + 1];
                 double st    = dists  [lx + 1][lz + 1];
                 double spRaw = islands[lx + 1][lz + 1];
+                double gridHi = grids[lx + 1][lz + 1];
 
                 boolean onSlope = fl < heights[lx    ][lz + 1]
                                || fl < heights[lx + 2][lz + 1]
@@ -524,7 +562,6 @@ public class OceanChunkGenerator extends ChunkGenerator {
                                || fl < heights[lx + 1][lz + 2];
 
                 double maxT = 1.0 + SPAWN_ISLAND_FEATHER / SPAWN_ISLAND_RADIUS;
-                double gridHi = gridIslandH(wx, wz);
                 boolean onIsland = spRaw > 0 || gridHi > 0.5;
                 int dirtLayers;
                 if (fl >= seaLevel && onIsland) dirtLayers = 3;
@@ -532,16 +569,18 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 else dirtLayers = 0;
 
                 int skip = 0;
+                int minY = chunk.getMinBuildHeight();
+                int topY = fl < seaLevel ? seaLevel : fl;
 
-                for (int y = chunk.getMinBuildHeight(); y < chunk.getMaxBuildHeight(); y++) {
+                at.set(wx, minY, wz);
+                chunk.setBlockState(at, Blocks.BEDROCK.defaultBlockState(), false);
+
+                for (int y = minY + 1; y <= topY; y++) {
                     if (skip > 0) { skip--; continue; }
 
                     at.set(wx, y, wz);
 
-                    if (y == chunk.getMinBuildHeight()) {
-                        chunk.setBlockState(at, Blocks.BEDROCK.defaultBlockState(), false);
-
-                    } else if (y < fl - dirtLayers) {
+                    if (y < fl - dirtLayers) {
                         chunk.setBlockState(at, Blocks.STONE.defaultBlockState(), false);
 
                     } else if (y < fl) {
@@ -646,7 +685,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 double st    = islandDist(wx, wz);
                 double spRaw = islandH(wx, wz, st);
                 double gridH = gridIslandH(wx, wz);
-                int    fl    = computeFloor(wx, wz, st, spRaw);
+                int    fl    = computeFloor(wx, wz, st, spRaw, gridH);
 
                 if (fl < seaLevel)  continue;
                 boolean isIsland = spRaw > 0.0 || gridH > 0.5;
