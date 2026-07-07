@@ -16,6 +16,7 @@ import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.config.ModConfig;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
+import net.neoforged.neoforge.client.event.RegisterColorHandlersEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
@@ -68,6 +69,7 @@ public class SWWorldgenCore {
         ITEMS.register(modEventBus);
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(this::onRegister);
+        modEventBus.addListener(this::onBlockColor);
         NeoForge.EVENT_BUS.register(this);
         modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
     }
@@ -77,6 +79,12 @@ public class SWWorldgenCore {
             ResourceLocation.fromNamespaceAndPath(MODID, "ocean"),
             () -> OceanChunkGenerator.CODEC);
         LOGGER.info("Registered OceanChunkGenerator codec");
+    }
+
+    private void onBlockColor(RegisterColorHandlersEvent.Block event) {
+        // Vanilla jungle leaves inventory color #48b518 — biome-independent
+        final int JUNGLE_FOLIAGE = 0x399013;
+        event.register((state, level, pos, tintIndex) -> JUNGLE_FOLIAGE, PALM_LEAF.get());
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {
