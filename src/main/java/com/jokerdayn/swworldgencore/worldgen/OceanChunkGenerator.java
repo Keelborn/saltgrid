@@ -30,6 +30,7 @@ import net.minecraft.world.level.levelgen.blending.Blender;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
@@ -56,17 +57,29 @@ public class OceanChunkGenerator extends ChunkGenerator {
             ).apply(instance, OceanChunkGenerator::new)
     );
 
-    private final long seed;
+    private long seed;
     private final int seaLevel;
 
     public OceanChunkGenerator(BiomeSource biomeSource, long seed, int seaLevel) {
         super(biomeSource);
         this.seed = seed;
         this.seaLevel = seaLevel;
+        log.info("[OceanChunkGenerator] Created with seed={}", seed);
     }
 
     public long getSeed() {
         return seed;
+    }
+
+    // Подхватываем реальный seed мира, потому что dimension JSON содержит seed=0
+    public void syncSeedFromLevel(WorldGenLevel level) {
+        if (seed == 0 && level != null) {
+            long worldSeed = level.getSeed();
+            if (worldSeed != 0) {
+                seed = worldSeed;
+                log.info("[OceanChunkGenerator] Synced seed from world: {}", seed);
+            }
+        }
     }
 
     @Override
@@ -134,6 +147,15 @@ public class OceanChunkGenerator extends ChunkGenerator {
         return val / max;
     }
 
+    /**
+     * Seed-dependent bounded offset. Возвращает значение в [-scale, scale].
+     * Безопасно для любых seed (не ломает точность double).
+     */
+    private double seedOffset(int salt, double scale) {
+        long h = rawHash(salt, 0);
+        return ((h & 0xFFFF) / (double) 0xFFFF * 2.0 - 1.0) * scale;
+    }
+
     private double ridgeNoise(double x, double z, int oct, double lac, double g) {
         double val = 0, amp = 1, freq = 1, max = 0;
         double prev = 1.0;
@@ -158,6 +180,37 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
     // расстояние от (x,z) до ближайшего grid-острова (нормализовано 0..1)
     // 0 = центр острова, 1 = край, >1 = за пределами
+
+    /**
+     * Поиск ближайшего центра grid-острова от позиции (px, pz).
+     * Возвращает {x, z} центра острова. Используется командой /island.
+     */
+    public int[] findNearestIslandCenter(int px, int pz) {
+        int cellX = Math.floorDiv(px, CELL);
+        int cellZ = Math.floorDiv(pz, CELL);
+
+        int[] best = {px, pz};
+        double bestDistSq = Double.MAX_VALUE;
+
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                int cx = cellX + dx, cz = cellZ + dz;
+                if (hsh(cx * 11, cz * 13) > 0.6) continue;
+
+                int ix = cx * CELL + 768 + (int)(hsh(cx * 2, cz * 2) * 512);
+                int iz = cz * CELL + 768 + (int)(hsh(cx * 2 + 1, cz * 2 + 1) * 512);
+
+                double dSq = (double)(ix - px) * (ix - px) + (double)(iz - pz) * (iz - pz);
+                if (dSq < bestDistSq) {
+                    bestDistSq = dSq;
+                    best[0] = ix;
+                    best[1] = iz;
+                }
+            }
+        }
+        return best;
+    }
+
     private double gridIslandDist(int x, int z) {
         int cellX = Math.floorDiv(x, CELL);
         int cellZ = Math.floorDiv(z, CELL);
@@ -230,7 +283,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 double falloff = edge * edge * (3.0 - 2.0 * edge);
 
                 // холмистый рельеф
-                double hill = fbm(x * 0.008 + cx * 31.0, z * 0.008 + cz * 47.0, 3, 2.0, 0.55);
+                double hill = fbm(x * 0.008 + cx * 31.0 + seedOffset(cx * 7 + cz, 1.5), z * 0.008 + cz * 47.0 + seedOffset(cx * 11 + cz, 0.8), 3, 2.0, 0.55);
                 hill = Mth.clamp((hill - 0.15) / 0.7, 0.0, 1.0);
                 hill = hill * hill * (3.0 - 2.0 * hill);
 
@@ -238,7 +291,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
                 // гора (ridgeline) для некоторых ячеек
                 if (mtnChance < 0.25) {
-                    double mtnR = ridgeNoise(x * 0.012 + cx * 53.0, z * 0.014 + cz * 67.0, 4, 2.0, 0.55);
+                    double mtnR = ridgeNoise(x * 0.012 + cx * 53.0 + seedOffset(cx * 13 + cz, 2.0), z * 0.014 + cz * 67.0 + seedOffset(cx * 17 + cz, 1.3), 4, 2.0, 0.55);
                     mtnR = Math.pow(mtnR, 0.5);
                     double mtnMask = Mth.clamp(1.0 - d / (radius * 0.6), 0.0, 1.0);
                     mtnMask = mtnMask * mtnMask;
@@ -262,17 +315,14 @@ public class OceanChunkGenerator extends ChunkGenerator {
     private double islandDist(int x, int z) {
         double dist = Math.sqrt((double) x * x + (double) z * z);
 
-        // seed-dependent offsets — каждый мир получает уникальную форму береговой линии
-        double s = seed * 0.001;
+        double wx1 = x + fbm(x * 0.004 + 7.3 + seedOffset(41, 1.0),     z * 0.004 + 2.1 + seedOffset(42, 0.7),  4, 2.0, 0.55) * 70;
+        double wz1 = z + fbm(x * 0.004 + 91.7 + seedOffset(43, 1.3), z * 0.004 + 53.4 + seedOffset(44, 0.5), 4, 2.0, 0.55) * 70;
 
-        double wx1 = x + fbm(x * 0.004 + 7.3 + s,     z * 0.004 + 2.1 + s * 0.7,  4, 2.0, 0.55) * 70;
-        double wz1 = z + fbm(x * 0.004 + 91.7 - s * 1.3, z * 0.004 + 53.4 + s * 0.5, 4, 2.0, 0.55) * 70;
+        double wx2 = wx1 + fbm(wx1 * 0.012 + 17.9 + seedOffset(45, 2.1), wz1 * 0.012 + 83.1 + seedOffset(46, 0.9), 3, 2.0, 0.45) * 30;
+        double wz2 = wz1 + fbm(wx1 * 0.012 + 44.2 + seedOffset(47, 0.6), wz1 * 0.012 + 11.6 + seedOffset(48, 1.7), 3, 2.0, 0.45) * 30;
 
-        double wx2 = wx1 + fbm(wx1 * 0.012 + 17.9 + s * 2.1, wz1 * 0.012 + 83.1 - s * 0.9, 3, 2.0, 0.45) * 30;
-        double wz2 = wz1 + fbm(wx1 * 0.012 + 44.2 - s * 0.6, wz1 * 0.012 + 11.6 + s * 1.7, 3, 2.0, 0.45) * 30;
-
-        double wx3 = wx2 + fbm(wx2 * 0.04 + 33.5 + s * 3.0, wz2 * 0.04 + 67.8 - s * 1.1, 2, 2.0, 0.4) * 10;
-        double wz3 = wz2 + fbm(wx2 * 0.04 + 5.5 - s * 0.8,  wz2 * 0.04 + 99.2 + s * 2.5, 2, 2.0, 0.4) * 10;
+        double wx3 = wx2 + fbm(wx2 * 0.04 + 33.5 + seedOffset(49, 3.0), wz2 * 0.04 + 67.8 + seedOffset(50, 1.1), 2, 2.0, 0.4) * 10;
+        double wz3 = wz2 + fbm(wx2 * 0.04 + 5.5 + seedOffset(51, 0.8),  wz2 * 0.04 + 99.2 + seedOffset(52, 2.5), 2, 2.0, 0.4) * 10;
 
         double warpX = wx3 - x, warpZ = wz3 - z;
         double warpShift = (warpX * x + warpZ * z) / (dist + 0.001);
@@ -294,30 +344,24 @@ public class OceanChunkGenerator extends ChunkGenerator {
         double falloff = edge * edge * (3.0 - 2.0 * edge);
         if (falloff < 0.001) return 0.0;
 
-        double s = seed * 0.001;
-
-        double rawHill  = fbm(x * 0.006 + 13.0 + s * 1.5, z * 0.006 + 77.0 - s * 0.8, 3, 2.0, 0.55);
+        double rawHill  = fbm(x * 0.006 + 13.0 + seedOffset(61, 1.5), z * 0.006 + 77.0 + seedOffset(62, 0.8), 3, 2.0, 0.55);
         double hillLarge = Mth.clamp((rawHill - 0.2) / 0.7, 0.0, 1.0);
         hillLarge = hillLarge * hillLarge * (3.0 - 2.0 * hillLarge);
-        double hillMid  = fbm(x * 0.018 + 55.0 - s * 2.0, z * 0.018 + 31.0 + s * 1.2, 2, 2.0, 0.45) * 0.3;
+        double hillMid  = fbm(x * 0.018 + 55.0 + seedOffset(63, 2.0), z * 0.018 + 31.0 + seedOffset(64, 1.2), 2, 2.0, 0.45) * 0.3;
         double raw      = (hillLarge + hillMid) * falloff * SPAWN_ISLAND_MAX_HEIGHT;
 
-        double wx = x + fbm(x * 0.015 + 101.3 + s * 3.0, z * 0.015 + 57.9 - s * 1.5, 3, 2.0, 0.5) * 40;
-        double wz = z + fbm(x * 0.015 + 33.7 - s * 1.0,  z * 0.015 + 88.2 + s * 2.2, 3, 2.0, 0.5) * 30;
+        double wx = x + fbm(x * 0.015 + 101.3 + seedOffset(65, 3.0), z * 0.015 + 57.9 + seedOffset(66, 1.5), 3, 2.0, 0.5) * 40;
+        double wz = z + fbm(x * 0.015 + 33.7 + seedOffset(67, 1.0),  z * 0.015 + 88.2 + seedOffset(68, 2.2), 3, 2.0, 0.5) * 30;
 
-        // гора: центр смещается от seed
-        double mtnX = wx / MTN_RX;
-        double mtnZ = (wz + MTN_CENTER_Z + s * 30.0) / MTN_RZ;
-        double eDist = Math.sqrt(mtnX * mtnX + mtnZ * mtnZ);
-        if (eDist <= 1.3) {
-            double eMask = Mth.clamp(1.0 - eDist / 1.3, 0.0, 1.0);
-            eMask = eMask * eMask * (3.0 - 2.0 * eMask);
-
-            double ridge     = Math.pow(ridgeNoise(wx * 0.018 + 200.0 + s * 5.0, wz * 0.022 + 150.0 - s * 3.0, 5, 2.0, 0.55), 0.6);
-            double mtnDetail = fbm(wx * 0.06 + 300.0 - s * 4.0, wz * 0.06 + 250.0 + s * 2.0, 3, 2.0, 0.45) * 0.3;
+        // Гора через interior mask острова (только центральная часть)
+        double interior = Mth.clamp(1.0 - t * 2.5, 0.0, 1.0);
+        interior = interior * interior * (3.0 - 2.0 * interior);
+        if (interior > 0.01) {
+            double ridge     = Math.pow(ridgeNoise(wx * 0.018 + 200.0 + seedOffset(69, 5.0), wz * 0.022 + 150.0 + seedOffset(70, 3.0), 5, 2.0, 0.55), 0.6);
+            double mtnDetail = fbm(wx * 0.06 + 300.0 + seedOffset(71, 4.0), wz * 0.06 + 250.0 + seedOffset(72, 2.0), 3, 2.0, 0.45) * 0.3;
             double combined  = ridge * 0.75 + mtnDetail * 0.25;
 
-            raw += MTN_HEIGHT * combined * eMask * falloff;
+            raw += MTN_HEIGHT * combined * interior * falloff;
         }
 
         return raw;
@@ -328,14 +372,17 @@ public class OceanChunkGenerator extends ChunkGenerator {
     // -------------------------------------------------------------------------
 
     private int computeFloor(int x, int z, double t, double spRaw) {
-        double s = seed * 0.001;
-        double wx = x + fbm(x * 0.005 + s * 1.0,        z * 0.005 - s * 0.5,        2, 2.0, 0.5) * 50;
-        double wz = z + fbm(x * 0.005 + 31.7 - s * 0.8, z * 0.005 + 47.3 + s * 1.2, 2, 2.0, 0.5) * 50;
+        return computeFloor(x, z, t, spRaw, gridIslandH(x, z));
+    }
+
+    private int computeFloor(int x, int z, double t, double spRaw, double gridH) {
+        double wx = x + fbm(x * 0.005 + seedOffset(81, 1.0),        z * 0.005 + seedOffset(82, 0.5),        2, 2.0, 0.5) * 50;
+        double wz = z + fbm(x * 0.005 + 31.7 + seedOffset(83, 0.8), z * 0.005 + 47.3 + seedOffset(84, 1.2), 2, 2.0, 0.5) * 50;
 
         double h = BASE_FLOOR
-                + fbm(wx * 0.004 + s * 2.0, wz * 0.004 - s * 1.5, 4, 2.0, 0.55) * 30
-                + fbm(wx * 0.016 - s * 0.7, wz * 0.016 + s * 0.9, 2, 2.0, 0.45) * 4
-                + fbm(wx * 0.05 + s * 3.0,  wz * 0.05 - s * 2.0,  2, 2.0, 0.4 ) * 1.5;
+                + fbm(wx * 0.004 + seedOffset(85, 2.0), wz * 0.004 + seedOffset(86, 1.5), 4, 2.0, 0.55) * 30
+                + fbm(wx * 0.016 + seedOffset(87, 0.7), wz * 0.016 + seedOffset(88, 0.9), 2, 2.0, 0.45) * 4
+                + fbm(wx * 0.05 + seedOffset(89, 3.0),  wz * 0.05 + seedOffset(90, 2.0),  2, 2.0, 0.4 ) * 1.5;
 
         int oceanFloor = Math.max(-63, Math.min((int) h, seaLevel - 4));
 
@@ -351,7 +398,6 @@ public class OceanChunkGenerator extends ChunkGenerator {
         }
 
         // --- grid-острова ---
-        double gridH = gridIslandH(x, z);
         if (gridH > 0.01) {
             int gridFloor = Math.max(oceanFloor, seaLevel + (int) Math.round(gridH));
             double blend = Mth.clamp(gridH / 3.0, 0.0, 1.0);
@@ -459,22 +505,42 @@ public class OceanChunkGenerator extends ChunkGenerator {
                                                         StructureManager structureManager, ChunkAccess chunk) {
         long startTime = System.nanoTime();
 
+        // Подхватываем реальный seed мира
+        if (chunk.getLevel() instanceof WorldGenLevel wgl) {
+            syncSeedFromLevel(wgl);
+        }
+
         ChunkPos cp = chunk.getPos();
         int cx = cp.x, cz = cp.z;
+
+        // Дебаг: логируем высоту в центре мира (0,0) для первого чанка
+        if (cx == 0 && cz == 0 && chunkCount == 0) {
+            double st0 = islandDist(0, 0);
+            double sp0 = islandH(0, 0, st0);
+            double gH0 = gridIslandH(0, 0);
+            double gDist0 = gridIslandDist(0, 0);
+            int fl0 = computeFloor(0, 0, st0, sp0);
+            log.info("[DEBUG] seed={} spawnDist={} spawnH={} gridH={} gridDist={} floor={}",
+                    seed, String.format("%.4f", st0), String.format("%.4f", sp0),
+                    String.format("%.4f", gH0), String.format("%.4f", gDist0), fl0);
+        }
 
         // Кэш 18×18 (16 блоков чанка + 1 с каждой стороны для проверки склонов)
         int[][]    heights = new int[18][18];
         double[][] dists   = new double[18][18];
         double[][] islands = new double[18][18];
+        double[][] grids   = new double[18][18];
 
         for (int lx = -1; lx <= 16; lx++) {
             for (int lz = -1; lz <= 16; lz++) {
                 int    wx    = cx * 16 + lx, wz = cz * 16 + lz;
                 double st    = islandDist(wx, wz);
                 double spRaw = islandH(wx, wz, st);
+                double gridH = gridIslandH(wx, wz);
                 dists  [lx + 1][lz + 1] = st;
                 islands[lx + 1][lz + 1] = spRaw;
-                heights[lx + 1][lz + 1] = computeFloor(wx, wz, st, spRaw);
+                grids  [lx + 1][lz + 1] = gridH;
+                heights[lx + 1][lz + 1] = computeFloor(wx, wz, st, spRaw, gridH);
             }
         }
 
@@ -486,6 +552,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 int    fl    = heights[lx + 1][lz + 1];
                 double st    = dists  [lx + 1][lz + 1];
                 double spRaw = islands[lx + 1][lz + 1];
+                double gridHi = grids[lx + 1][lz + 1];
 
                 boolean onSlope = fl < heights[lx    ][lz + 1]
                                || fl < heights[lx + 2][lz + 1]
@@ -493,7 +560,6 @@ public class OceanChunkGenerator extends ChunkGenerator {
                                || fl < heights[lx + 1][lz + 2];
 
                 double maxT = 1.0 + SPAWN_ISLAND_FEATHER / SPAWN_ISLAND_RADIUS;
-                double gridHi = gridIslandH(wx, wz);
                 boolean onIsland = spRaw > 0 || gridHi > 0.5;
                 int dirtLayers;
                 if (fl >= seaLevel && onIsland) dirtLayers = 3;
@@ -501,16 +567,18 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 else dirtLayers = 0;
 
                 int skip = 0;
+                int minY = chunk.getMinBuildHeight();
+                int topY = fl < seaLevel ? seaLevel : fl;
 
-                for (int y = chunk.getMinBuildHeight(); y < chunk.getMaxBuildHeight(); y++) {
+                at.set(wx, minY, wz);
+                chunk.setBlockState(at, Blocks.BEDROCK.defaultBlockState(), false);
+
+                for (int y = minY + 1; y <= topY; y++) {
                     if (skip > 0) { skip--; continue; }
 
                     at.set(wx, y, wz);
 
-                    if (y == chunk.getMinBuildHeight()) {
-                        chunk.setBlockState(at, Blocks.BEDROCK.defaultBlockState(), false);
-
-                    } else if (y < fl - dirtLayers) {
+                    if (y < fl - dirtLayers) {
                         chunk.setBlockState(at, Blocks.STONE.defaultBlockState(), false);
 
                     } else if (y < fl) {
@@ -604,6 +672,8 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
     @Override
     public void applyBiomeDecoration(WorldGenLevel level, ChunkAccess chunk, StructureManager structureManager) {
+        syncSeedFromLevel(level);
+
         ChunkPos cp = chunk.getPos();
         int cx = cp.x, cz = cp.z;
 
@@ -613,7 +683,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 double st    = islandDist(wx, wz);
                 double spRaw = islandH(wx, wz, st);
                 double gridH = gridIslandH(wx, wz);
-                int    fl    = computeFloor(wx, wz, st, spRaw);
+                int    fl    = computeFloor(wx, wz, st, spRaw, gridH);
 
                 if (fl < seaLevel)  continue;
                 boolean isIsland = spRaw > 0.0 || gridH > 0.5;
@@ -733,6 +803,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
     @Override
     public int getBaseHeight(int x, int z, Heightmap.Types heightmapType,
                              LevelHeightAccessor level, RandomState random) {
+        if (level instanceof WorldGenLevel wgl) syncSeedFromLevel(wgl);
         // Упрощено: без проверки склонов (экономит 4 вызова computeFloor на блок)
         // Слоупы обрабатываются в fillFromNoise через кэш 18x18
         double st    = islandDist(x, z);
