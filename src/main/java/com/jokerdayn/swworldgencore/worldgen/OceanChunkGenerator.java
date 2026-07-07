@@ -282,6 +282,8 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 double edge = Mth.clamp(1.0 - t, 0.0, 1.0);
                 double falloff = edge * edge * (3.0 - 2.0 * edge);
 
+                double s = seed * 0.001;
+
                 // холмистый рельеф
                 double hill = fbm(x * 0.008 + cx * 31.0 + seedOffset(cx * 7 + cz, 1.5), z * 0.008 + cz * 47.0 + seedOffset(cx * 11 + cz, 0.8), 3, 2.0, 0.55);
                 hill = Mth.clamp((hill - 0.15) / 0.7, 0.0, 1.0);
