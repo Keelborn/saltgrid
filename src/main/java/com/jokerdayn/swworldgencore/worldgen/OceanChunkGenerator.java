@@ -105,6 +105,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
             seedOffsets[i] = ((h & 0xFFFF) / (double) 0xFFFF * 2.0 - 1.0);
         }
         BIOME_CACHE.clear();
+        FLOOR_CACHE.clear();
     }
 
     private double seedOff(int salt, double scale) {
@@ -377,7 +378,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
     }
 
     // -------------------------------------------------------------------------
-    // Пляжи (по расстоянию до кромки воды) и классификация биомов
+    // Пляжи (по расстоянию до РЕАЛЬНОЙ воды) и классификация биомов
     // -------------------------------------------------------------------------
 
     public enum BiomeCategory { OCEAN, DEEP_OCEAN, BEACH, TROPICS, SAVANNA }
@@ -385,40 +386,68 @@ public class OceanChunkGenerator extends ChunkGenerator {
     private static final ConcurrentHashMap<Long, BiomeCategory> BIOME_CACHE = new ConcurrentHashMap<>();
     private static final int BIOME_CACHE_MAX = 65536;
 
+    private static final ConcurrentHashMap<Long, Integer> FLOOR_CACHE = new ConcurrentHashMap<>();
+    private static final int FLOOR_CACHE_MAX = 262144;
+
+    private static long colKey(int x, int z) {
+        return ((long) x << 32) ^ (z & 0xFFFFFFFFL);
+    }
+
+    /** Высота пола колонки с кэшем — нужна для поиска воды рядом с берегом. */
+    private int floorAt(int x, int z) {
+        long key = colKey(x, z);
+        Integer cached = FLOOR_CACHE.get(key);
+        if (cached != null) return cached;
+        double st = islandDist(x, z);
+        double spRaw = islandH(x, z, st);
+        int fl = computeFloor(x, z, st, spRaw);
+        if (FLOOR_CACHE.size() > FLOOR_CACHE_MAX) FLOOR_CACHE.clear();
+        FLOOR_CACHE.put(key, fl);
+        return fl;
+    }
+
+    /** Ширина пляжа в блоках, плавно меняется вдоль берега (12..40). */
     private double beachWidthAt(int x, int z) {
         double n = fbm(x * 0.015 + seedOff(120, 2.0), z * 0.015 + seedOff(121, 1.5), 3, 2.0, 0.5);
-        return 5.0 + n * 15.0;
+        return 12.0 + n * 28.0;
     }
 
-    private boolean isBeach(int x, int z, double t, double gridT, double gridR, int fl) {
+    private static final int[][] BEACH_DIRS = {
+            {1, 0}, {-1, 0}, {0, 1}, {0, -1},
+            {1, 1}, {1, -1}, {-1, 1}, {-1, -1}
+    };
+
+    /**
+     * Пляж = близость к реальной воде. Сканируем 8 направлений: если в пределах
+     * beachWidth есть колонка с fl < seaLevel — это пляж. Колонка у самой кромки
+     * всегда находит воду на расстоянии 1, поэтому песок гарантированно доходит
+     * до океана без разрывов. Высота используется только чтобы убрать песок
+     * с береговых обрывов (fl > seaLevel + 5).
+     */
+    private boolean isBeach(int x, int z, int fl) {
         if (fl < seaLevel) return false;
-        if (fl > seaLevel + 8) return false;
-        double distFromEdge = Double.MAX_VALUE;
-        if (t <= 1.0) {
-            distFromEdge = (1.0 - t) * SPAWN_ISLAND_RADIUS;
+        if (fl > seaLevel + 5) return false;
+        int width = (int) beachWidthAt(x, z);
+        for (int[] dir : BEACH_DIRS) {
+            for (int d = 1; d <= width; d += (d < 4 ? 1 : 3)) {
+                if (floorAt(x + dir[0] * d, z + dir[1] * d) < seaLevel) return true;
+            }
         }
-        if (gridT <= 1.0 && gridR > 0.0) {
-            distFromEdge = Math.min(distFromEdge, (1.0 - gridT) * gridR);
-        }
-        if (distFromEdge == Double.MAX_VALUE) return false;
-        return distFromEdge < beachWidthAt(x, z);
+        return false;
     }
 
+    /** Классификация биома для колонки. Используется OceanBiomeSource (F3) и генерацией. */
     public BiomeCategory classifyBiome(int x, int z) {
-        long key = ((long) x << 32) ^ (z & 0xFFFFFFFFL);
+        long key = colKey(x, z);
         BiomeCategory cached = BIOME_CACHE.get(key);
         if (cached != null) return cached;
 
-        double st    = islandDist(x, z);
-        double spRaw = islandH(x, z, st);
-        double[] grid = new double[3];
-        gridIslandSample(x, z, grid);
-        int fl = computeFloor(x, z, st, spRaw, grid[2]);
+        int fl = floorAt(x, z);
 
         BiomeCategory result;
         if (fl < seaLevel) {
             result = (seaLevel - fl > 28) ? BiomeCategory.DEEP_OCEAN : BiomeCategory.OCEAN;
-        } else if (isBeach(x, z, st, grid[0], grid[1], fl)) {
+        } else if (isBeach(x, z, fl)) {
             result = BiomeCategory.BEACH;
         } else {
             result = biomeNoise(x, z) > 0.5 ? BiomeCategory.TROPICS : BiomeCategory.SAVANNA;
@@ -559,7 +588,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                     else if (st < maxT)             dirtLayers = 2;
                     else                            dirtLayers = 0;
 
-                    boolean beach = isBeach(wx, wz, st, gridDist, gridRad, fl);
+                    boolean beach = isBeach(wx, wz, fl);
 
                     setDirect(chunk, lx, minY, lz, BEDROCK_S);
                     fillYRange(chunk, lx, lz, minY + 1, fl - dirtLayers - 1, STONE_S);
@@ -811,7 +840,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
         if (fl >= seaLevel && onIsl) dirtLayers = 3;
         else if (st < maxT) dirtLayers = 2;
         else dirtLayers = 0;
-        boolean beach = isBeach(x, z, st, gridDi, gridRi, fl);
+        boolean beach = isBeach(x, z, fl);
         int minY = level.getMinBuildHeight(), maxY = level.getMaxBuildHeight();
         BlockState[] col = new BlockState[maxY - minY];
         int skip = 0;

@@ -7,7 +7,6 @@ import net.minecraft.core.HolderGetter;
 import net.minecraft.core.QuartPos;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.BiomeSource;
-import net.minecraft.world.level.biome.Biomes;
 import net.minecraft.world.level.biome.Climate;
 
 import java.util.stream.Stream;
@@ -42,11 +41,11 @@ public class OceanBiomeSource extends BiomeSource {
 
     public static OceanBiomeSource create(HolderGetter<Biome> biomes) {
         return new OceanBiomeSource(
-                biomes.getOrThrow(Biomes.OCEAN),
-                biomes.getOrThrow(Biomes.DEEP_OCEAN),
-                biomes.getOrThrow(Biomes.BEACH),
-                biomes.getOrThrow(Biomes.JUNGLE),
-                biomes.getOrThrow(Biomes.SAVANNA));
+                biomes.getOrThrow(ModBiomes.OCEAN),
+                biomes.getOrThrow(ModBiomes.DEEP_OCEAN),
+                biomes.getOrThrow(ModBiomes.BEACH),
+                biomes.getOrThrow(ModBiomes.TROPICS),
+                biomes.getOrThrow(ModBiomes.SAVANNA));
     }
 
     void attachGenerator(OceanChunkGenerator gen) {

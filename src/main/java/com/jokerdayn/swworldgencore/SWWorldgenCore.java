@@ -5,7 +5,6 @@ import org.slf4j.Logger;
 import com.mojang.logging.LogUtils;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
-import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
@@ -25,12 +24,10 @@ import net.neoforged.neoforge.registries.RegisterEvent;
 import net.neoforged.neoforge.registries.DeferredRegister;
 import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredBlock;
-import net.minecraft.core.Direction;
 import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import com.jokerdayn.swworldgencore.block.ShellBlock;
-
 import com.jokerdayn.swworldgencore.block.GroundDecorationBlock;
 import com.jokerdayn.swworldgencore.block.PalmSaplingBlock;
 import com.jokerdayn.swworldgencore.block.PalmLeafBlock;
@@ -86,12 +83,25 @@ public class SWWorldgenCore {
     }
 
     private void onBlockColor(RegisterColorHandlersEvent.Block event) {
-        // Vanilla jungle leaves inventory color #48b518 — biome-independent
+        // Palm leaf — static green
         final int JUNGLE_FOLIAGE = 0x399013;
         event.register((state, level, pos, tintIndex) -> JUNGLE_FOLIAGE, PALM_LEAF.get());
-        // более спокойный зелёный для травы — убирает кислотный контраст
+
+        // Calm grass for short grass
         final int GRASS_CALM = 0x5A9E3A;
         event.register((state, level, pos, tintIndex) -> GRASS_CALM, net.minecraft.world.level.block.Blocks.SHORT_GRASS);
+
+        // Grass block (дёрн) — biome-specific
+        event.register((state, level, pos, tintIndex) -> {
+            if (!(level instanceof net.minecraft.world.level.Level lv)) return 0xA0B14A;
+            var key = lv.getBiome(pos).unwrapKey().orElse(null);
+            if (key == null) return 0xA0B14A;
+            return switch (key.location().getPath()) {
+                case "savanna" -> 0xA0B14A;
+                case "tropics" -> 0xA6A450;
+                default -> 0xA0B14A;
+            };
+        }, net.minecraft.world.level.block.Blocks.GRASS_BLOCK);
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {

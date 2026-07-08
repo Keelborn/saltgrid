@@ -4,11 +4,11 @@
     "type": "swworldgencore:ocean",
     "biome_source": {
       "type": "swworldgencore:ocean_biomes",
-      "ocean": "minecraft:ocean",
-      "deep_ocean": "minecraft:deep_ocean",
-      "beach": "minecraft:beach",
-      "tropics": "minecraft:jungle",
-      "savanna": "minecraft:savanna"
+      "ocean": "swworldgencore:ocean",
+      "deep_ocean": "swworldgencore:deep_ocean",
+      "beach": "swworldgencore:beach",
+      "tropics": "swworldgencore:tropics",
+      "savanna": "swworldgencore:savanna"
     },
     "seed": 0,
     "sea_level": 63

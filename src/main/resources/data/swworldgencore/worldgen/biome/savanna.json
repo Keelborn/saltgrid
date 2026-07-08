@@ -1,0 +1,23 @@
+{
+  "temperature": 1.2,
+  "downfall": 0.0,
+  "has_precipitation": false,
+  "effects": {
+    "sky_color": 7776511,
+    "fog_color": 12638463,
+    "water_color": 4159204,
+    "water_fog_color": 329011,
+    "grass_color": 11453525,
+    "foliage_color": 9414706
+  },
+  "spawners": {
+    "monster": [], "creature": [
+      { "type": "minecraft:horse", "weight": 1, "minCount": 2, "maxCount": 6 }
+    ],
+    "ambient": [], "water_creature": [], "water_ambient": [],
+    "underground_water_creature": [], "axolotls": [], "misc": []
+  },
+  "spawn_costs": {},
+  "carvers": { "air": [] },
+  "features": []
+}

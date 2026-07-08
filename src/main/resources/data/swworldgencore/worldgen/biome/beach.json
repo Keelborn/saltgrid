@@ -1,0 +1,21 @@
+{
+  "temperature": 0.9,
+  "downfall": 0.4,
+  "has_precipitation": true,
+  "effects": {
+    "sky_color": 7907327,
+    "fog_color": 12638463,
+    "water_color": 4445678,
+    "water_fog_color": 270131
+  },
+  "spawners": {
+    "monster": [], "creature": [
+      { "type": "minecraft:turtle", "weight": 5, "minCount": 2, "maxCount": 5 }
+    ],
+    "ambient": [], "water_creature": [], "water_ambient": [],
+    "underground_water_creature": [], "axolotls": [], "misc": []
+  },
+  "spawn_costs": {},
+  "carvers": { "air": [] },
+  "features": []
+}
