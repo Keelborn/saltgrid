@@ -3,8 +3,12 @@
   "generator": {
     "type": "swworldgencore:ocean",
     "biome_source": {
-      "type": "minecraft:fixed",
-      "biome": "minecraft:ocean"
+      "type": "swworldgencore:ocean_biomes",
+      "ocean": "minecraft:ocean",
+      "deep_ocean": "minecraft:deep_ocean",
+      "beach": "minecraft:beach",
+      "tropics": "minecraft:jungle",
+      "savanna": "minecraft:savanna"
     },
     "seed": 0,
     "sea_level": 63

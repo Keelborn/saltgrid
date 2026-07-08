@@ -81,6 +81,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
         this.seed = seed;
         this.seaLevel = seaLevel;
         buildSeedOffsets();
+        if (biomeSource instanceof OceanBiomeSource obs) obs.attachGenerator(this);
         log.info("[OceanChunkGenerator] Created with seed={}", seed);
     }
 
@@ -103,6 +104,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
             long h = rawHash(i, 0);
             seedOffsets[i] = ((h & 0xFFFF) / (double) 0xFFFF * 2.0 - 1.0);
         }
+        BIOME_CACHE.clear();
     }
 
     private double seedOff(int salt, double scale) {
@@ -350,26 +352,16 @@ public class OceanChunkGenerator extends ChunkGenerator {
     // Поверхностные блоки
     // -------------------------------------------------------------------------
 
-    private BlockState pickSurf(int x, int z, int fl, double t, double spRaw,
-                                double gridH, double gridDi, double gridRi) {
-        double biome = biomeNoise(x, z);
+    private BlockState pickSurf(int x, int z, int fl, double t, double gridH, double gridDi, boolean beach) {
         double maxT = 1.0 + SPAWN_ISLAND_FEATHER / SPAWN_ISLAND_RADIUS;
-        if (t < maxT) {
-            double distFromEdge = 1.0 - t;
-            double beachWidth = biome > 0.5 ? 27.0 : 20.0;
-            double beachNorm = beachWidth / SPAWN_ISLAND_RADIUS;
-            if (distFromEdge < beachNorm) return Blocks.SAND.defaultBlockState();
-            return Blocks.GRASS_BLOCK.defaultBlockState();
+        boolean nearIsland = t < maxT || (gridDi <= 1.0 && gridH > 0.01);
+        if (!nearIsland) return oceanFloor(x, z, fl);
+        if (fl < seaLevel) {
+            if (seaLevel - fl <= 6) return Blocks.SAND.defaultBlockState();
+            return oceanFloor(x, z, fl);
         }
-        if (gridDi >= 1.0) return oceanFloor(x, z, fl);
-        if (gridH >= 5.0) return Blocks.GRASS_BLOCK.defaultBlockState();
-        if (gridH > 0.5) {
-            double beachThreshold = biome > 0.5 ? 3.5 : 1.5;
-            double sandChance = Mth.clamp(1.0 - gridH / beachThreshold, 0.0, 0.8);
-            if (hsh(x * 7, z * 13) < sandChance) return Blocks.SAND.defaultBlockState();
-            return Blocks.GRASS_BLOCK.defaultBlockState();
-        }
-        return oceanFloor(x, z, fl);
+        if (beach) return Blocks.SAND.defaultBlockState();
+        return Blocks.GRASS_BLOCK.defaultBlockState();
     }
 
     private BlockState oceanFloor(int x, int z, int fl) {
@@ -384,16 +376,67 @@ public class OceanChunkGenerator extends ChunkGenerator {
         return base;
     }
 
-    private BlockState subSurf(int x, int z, int fl, double t, double spRaw, double gridH) {
+    // -------------------------------------------------------------------------
+    // Пляжи (по расстоянию до кромки воды) и классификация биомов
+    // -------------------------------------------------------------------------
+
+    public enum BiomeCategory { OCEAN, DEEP_OCEAN, BEACH, TROPICS, SAVANNA }
+
+    private static final ConcurrentHashMap<Long, BiomeCategory> BIOME_CACHE = new ConcurrentHashMap<>();
+    private static final int BIOME_CACHE_MAX = 65536;
+
+    private double beachWidthAt(int x, int z) {
+        double n = fbm(x * 0.015 + seedOff(120, 2.0), z * 0.015 + seedOff(121, 1.5), 3, 2.0, 0.5);
+        return 5.0 + n * 15.0;
+    }
+
+    private boolean isBeach(int x, int z, double t, double gridT, double gridR, int fl) {
+        if (fl < seaLevel) return false;
+        if (fl > seaLevel + 8) return false;
+        double distFromEdge = Double.MAX_VALUE;
+        if (t <= 1.0) {
+            distFromEdge = (1.0 - t) * SPAWN_ISLAND_RADIUS;
+        }
+        if (gridT <= 1.0 && gridR > 0.0) {
+            distFromEdge = Math.min(distFromEdge, (1.0 - gridT) * gridR);
+        }
+        if (distFromEdge == Double.MAX_VALUE) return false;
+        return distFromEdge < beachWidthAt(x, z);
+    }
+
+    public BiomeCategory classifyBiome(int x, int z) {
+        long key = ((long) x << 32) ^ (z & 0xFFFFFFFFL);
+        BiomeCategory cached = BIOME_CACHE.get(key);
+        if (cached != null) return cached;
+
+        double st    = islandDist(x, z);
+        double spRaw = islandH(x, z, st);
+        double[] grid = new double[3];
+        gridIslandSample(x, z, grid);
+        int fl = computeFloor(x, z, st, spRaw, grid[2]);
+
+        BiomeCategory result;
+        if (fl < seaLevel) {
+            result = (seaLevel - fl > 28) ? BiomeCategory.DEEP_OCEAN : BiomeCategory.OCEAN;
+        } else if (isBeach(x, z, st, grid[0], grid[1], fl)) {
+            result = BiomeCategory.BEACH;
+        } else {
+            result = biomeNoise(x, z) > 0.5 ? BiomeCategory.TROPICS : BiomeCategory.SAVANNA;
+        }
+
+        if (BIOME_CACHE.size() > BIOME_CACHE_MAX) BIOME_CACHE.clear();
+        BIOME_CACHE.put(key, result);
+        return result;
+    }
+
+    private BlockState subSurf(int x, int z, int fl, double t, double spRaw, double gridH, boolean beach) {
+        if (beach) return Blocks.SAND.defaultBlockState();
         if (fl >= seaLevel) {
-            boolean isIsland = spRaw >= 4.0 || gridH >= 4.0;
+            boolean isIsland = spRaw > 0.0 || gridH > 0.5;
             return isIsland ? Blocks.DIRT.defaultBlockState() : Blocks.SAND.defaultBlockState();
         }
         double maxT = 1.0 + SPAWN_ISLAND_FEATHER / SPAWN_ISLAND_RADIUS;
-        if (spRaw > 0.0 || t < maxT) {
-            return hsh(x * 11, z * 17) < 0.6 ? Blocks.SAND.defaultBlockState() : Blocks.GRAVEL.defaultBlockState();
-        }
-        if (gridH > 0.5) {
+        if (t < maxT || gridH > 0.01) {
             return hsh(x * 11, z * 17) < 0.6 ? Blocks.SAND.defaultBlockState() : Blocks.GRAVEL.defaultBlockState();
         }
         return null;
@@ -516,15 +559,17 @@ public class OceanChunkGenerator extends ChunkGenerator {
                     else if (st < maxT)             dirtLayers = 2;
                     else                            dirtLayers = 0;
 
+                    boolean beach = isBeach(wx, wz, st, gridDist, gridRad, fl);
+
                     setDirect(chunk, lx, minY, lz, BEDROCK_S);
                     fillYRange(chunk, lx, lz, minY + 1, fl - dirtLayers - 1, STONE_S);
 
                     if (dirtLayers > 0) {
-                        BlockState sub = subSurf(wx, wz, fl, st, spRaw, gridHi);
+                        BlockState sub = subSurf(wx, wz, fl, st, spRaw, gridHi, beach);
                         fillYRange(chunk, lx, lz, fl - dirtLayers, fl - 1, sub != null ? sub : STONE_S);
                     }
 
-                    BlockState surf = pickSurf(wx, wz, fl, st, spRaw, gridHi, gridDist, gridRad);
+                    BlockState surf = pickSurf(wx, wz, fl, st, gridHi, gridDist, beach);
                     setDirect(chunk, lx, fl, lz, surf);
                     hmOcean.update(lx, fl, lz, surf);
                     hmSurface.update(lx, fl, lz, surf);
@@ -650,7 +695,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                     continue;
                 }
 
-                if (onSand && isBeachBiome && hsh(wx * 31, wz * 37) < 0.06) {
+                if (onSand && hsh(wx * 31, wz * 37) < 0.06) {
                     BlockPos above = new BlockPos(wx, fl + 1, wz);
                     if (level.getBlockState(above).isAir()) {
                         ShellBlock.Variation[] vars = ShellBlock.Variation.values();
@@ -766,6 +811,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
         if (fl >= seaLevel && onIsl) dirtLayers = 3;
         else if (st < maxT) dirtLayers = 2;
         else dirtLayers = 0;
+        boolean beach = isBeach(x, z, st, gridDi, gridRi, fl);
         int minY = level.getMinBuildHeight(), maxY = level.getMaxBuildHeight();
         BlockState[] col = new BlockState[maxY - minY];
         int skip = 0;
@@ -776,10 +822,10 @@ public class OceanChunkGenerator extends ChunkGenerator {
             } else if (y < fl - dirtLayers) {
                 col[y - minY] = Blocks.STONE.defaultBlockState();
             } else if (y < fl) {
-                BlockState sub = subSurf(x, z, fl, st, spRaw, gridHi);
+                BlockState sub = subSurf(x, z, fl, st, spRaw, gridHi, beach);
                 col[y - minY] = sub != null ? sub : Blocks.STONE.defaultBlockState();
             } else if (y == fl) {
-                col[y - minY] = pickSurf(x, z, fl, st, spRaw, gridHi, gridDi, gridRi);
+                col[y - minY] = pickSurf(x, z, fl, st, gridHi, gridDi, beach);
             } else if (y == fl + 1) {
                 if (fl >= seaLevel) {
                     col[y - minY] = Blocks.AIR.defaultBlockState();

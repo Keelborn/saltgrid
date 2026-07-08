@@ -35,6 +35,7 @@ import com.jokerdayn.swworldgencore.block.GroundDecorationBlock;
 import com.jokerdayn.swworldgencore.block.PalmSaplingBlock;
 import com.jokerdayn.swworldgencore.block.PalmLeafBlock;
 import com.jokerdayn.swworldgencore.worldgen.OceanChunkGenerator;
+import com.jokerdayn.swworldgencore.worldgen.OceanBiomeSource;
 
 @Mod(SWWorldgenCore.MODID)
 public class SWWorldgenCore {
@@ -78,13 +79,19 @@ public class SWWorldgenCore {
         event.register(Registries.CHUNK_GENERATOR,
             ResourceLocation.fromNamespaceAndPath(MODID, "ocean"),
             () -> OceanChunkGenerator.CODEC);
-        LOGGER.info("Registered OceanChunkGenerator codec");
+        event.register(Registries.BIOME_SOURCE,
+            ResourceLocation.fromNamespaceAndPath(MODID, "ocean_biomes"),
+            () -> OceanBiomeSource.CODEC);
+        LOGGER.info("Registered OceanChunkGenerator + OceanBiomeSource codecs");
     }
 
     private void onBlockColor(RegisterColorHandlersEvent.Block event) {
         // Vanilla jungle leaves inventory color #48b518 — biome-independent
         final int JUNGLE_FOLIAGE = 0x399013;
         event.register((state, level, pos, tintIndex) -> JUNGLE_FOLIAGE, PALM_LEAF.get());
+        // более спокойный зелёный для травы — убирает кислотный контраст
+        final int GRASS_CALM = 0x5A9E3A;
+        event.register((state, level, pos, tintIndex) -> GRASS_CALM, net.minecraft.world.level.block.Blocks.SHORT_GRASS);
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {
