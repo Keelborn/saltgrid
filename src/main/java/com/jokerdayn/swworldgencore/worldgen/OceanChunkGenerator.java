@@ -436,6 +436,92 @@ public class OceanChunkGenerator extends ChunkGenerator {
         return false;
     }
 
+    /**
+     * Определяет, является ли позиция "проплешиной" (tropics) на острове.
+     * Генерирует МАКСИМУМ 2 центра проплешин на основе хеша центра острова.
+     * Проплешины большие: 35-60% от радиуса острова.
+     */
+    private boolean isIslandClearing(int x, int z) {
+        int ix, iz;
+        double radius;
+        long islandHash;
+
+        // Проверяем спавн-остров (отдельная система от grid)
+        double st = islandDist(x, z);
+        if (st <= 1.0) {
+            // На спавн-острове — центр в (0, 0), радиус SPAWN_ISLAND_RADIUS
+            ix = 0;
+            iz = 0;
+            radius = SPAWN_ISLAND_RADIUS;
+            islandHash = rawHash(0, 0); // фиксированный хеш для спавна
+            log.info("[CLEARING] Spawn island detected at ({}, {})", x, z);
+        } else {
+            // Ищем grid-остров
+            int cellX = Math.floorDiv(x, CELL), cellZ = Math.floorDiv(z, CELL);
+            int bestCx = 0, bestCz = 0;
+            double bestDistSq = Double.MAX_VALUE;
+            double bestRadius = 0;
+
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    int cx = cellX + dx, cz = cellZ + dz;
+                    double rHash = hsh(cx * 11, cz * 13);
+                    if (rHash > 0.6) continue;
+                    double r = 80 + rHash * 120;
+                    int cix = cx * CELL + 768 + (int)(hsh(cx * 2, cz * 2) * 512);
+                    int ciz = cz * CELL + 768 + (int)(hsh(cx * 2 + 1, cz * 2 + 1) * 512);
+                    double dSq = (double)(x - cix) * (x - cix) + (double)(z - ciz) * (z - ciz);
+                    if (dSq < bestDistSq) {
+                        bestDistSq = dSq;
+                        bestCx = cx;
+                        bestCz = cz;
+                        bestRadius = r;
+                    }
+                }
+            }
+
+            if (bestRadius < 1) {
+                log.info("[CLEARING] No island found at ({}, {})", x, z);
+                return false;
+            }
+
+            ix = bestCx * CELL + 768 + (int)(hsh(bestCx * 2, bestCz * 2) * 512);
+            iz = bestCz * CELL + 768 + (int)(hsh(bestCx * 2 + 1, bestCz * 2 + 1) * 512);
+            radius = bestRadius;
+            islandHash = rawHash(bestCx * 37, bestCz * 41);
+        }
+
+        // Относительная позиция от центра (-1..+1)
+        double relX = (x - ix) / radius;
+        double relZ = (z - iz) / radius;
+
+        // Генерируем 2 центра проплешин на основе хеша острова
+        for (int i = 0; i < 2; i++) {
+            long h = rawHash((int)(islandHash) + i * 1000, (int)(islandHash >> 32) + i * 1000);
+            double clearRelX = ((h & 0xFFFF) / (double) 0xFFFF - 0.5) * 1.2;
+            double clearRelZ = (((h >> 16) & 0xFFFF) / (double) 0xFFFF - 0.5) * 1.2;
+            double clearRadius = 0.35 + ((h >> 32) & 0xFF) / 255.0 * 0.25;
+
+            double distSq = (relX - clearRelX) * (relX - clearRelX)
+                          + (relZ - clearRelZ) * (relZ - clearRelZ);
+            double dist = Math.sqrt(distSq);
+
+            if (x % 32 == 0 && z % 32 == 0) {
+                log.info("[CLEARING] pos=({},{}) island=({},{}) r={} rel=({},{}) clear{}: center=({},{}) r={} dist={} hit={}",
+                    x, z, ix, iz, String.format("%.1f", radius),
+                    String.format("%.2f", relX), String.format("%.2f", relZ),
+                    i, String.format("%.2f", clearRelX), String.format("%.2f", clearRelZ),
+                    String.format("%.2f", clearRadius), String.format("%.2f", dist),
+                    dist < clearRadius);
+            }
+
+            if (distSq < clearRadius * clearRadius) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** Классификация биома для колонки. Используется OceanBiomeSource (F3) и генерацией. */
     public BiomeCategory classifyBiome(int x, int z) {
         long key = colKey(x, z);
@@ -450,7 +536,11 @@ public class OceanChunkGenerator extends ChunkGenerator {
         } else if (isBeach(x, z, fl)) {
             result = BiomeCategory.BEACH;
         } else {
-            result = biomeNoise(x, z) > 0.5 ? BiomeCategory.TROPICS : BiomeCategory.SAVANNA;
+            boolean clearing = isIslandClearing(x, z);
+            result = clearing ? BiomeCategory.TROPICS : BiomeCategory.SAVANNA;
+            if (x % 32 == 0 && z % 32 == 0) {
+                log.info("[BIOME] ({},{}) fl={} clearing={} -> {}", x, z, fl, clearing, result);
+            }
         }
 
         if (BIOME_CACHE.size() > BIOME_CACHE_MAX) BIOME_CACHE.clear();
@@ -716,10 +806,10 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
                 BlockPos surface = new BlockPos(wx, fl, wz);
                 boolean  onSand  = level.getBlockState(surface).is(Blocks.SAND);
-                double biome = biomeNoise(wx, wz);
-                boolean isBeachBiome = biome > 0.5;
+                BiomeCategory biome = classifyBiome(wx, wz);
+                boolean isTropicsBiome = biome == BiomeCategory.TROPICS;
 
-                if (onSand && isBeachBiome && hsh(wx * 41, wz * 43) < 0.003) {
+                if (onSand && isTropicsBiome && hsh(wx * 41, wz * 43) < 0.003) {
                     PalmGenerator.tryPlacePalm(level, wx, fl + 1, wz, hsh(wx * 53, wz * 59));
                     continue;
                 }
@@ -752,7 +842,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 double   r     = hsh(wx * 17, wz * 29);
                 BlockPos above = new BlockPos(wx, fl + 1, wz);
 
-                if (!isBeachBiome && r < 0.04) {
+                if (!isTropicsBiome && r < 0.04) {
                     if (level.getBlockState(above).isAir()
                             && !nearTree(level, wx, fl + 1, wz, 5)) {
                         AcaciaGenerator.tryPlace(level, wx, fl, wz, hsh(wx * 53, wz * 67));
