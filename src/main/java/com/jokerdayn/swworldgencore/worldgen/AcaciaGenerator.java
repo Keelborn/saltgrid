@@ -17,7 +17,7 @@ public final class AcaciaGenerator {
 
     private static final BlockState LEAF = Blocks.ACACIA_LEAVES.defaultBlockState()
             .setValue(LeavesBlock.PERSISTENT, true);
-    private static final BlockState WOOD = Blocks.OAK_WOOD.defaultBlockState();
+    private static final BlockState WOOD = Blocks.ACACIA_LOG.defaultBlockState();
 
     // raintree1 — среднее дерево, 11x13x9, 114 блоков
     private static final int[][] RT1 = {
@@ -112,40 +112,83 @@ public final class AcaciaGenerator {
 
     private static final int[][][] ALL = {RT1, RT2, RT3};
 
-    public static void tryPlace(WorldGenLevel level, int ax, int ay, int az, double seedMix) {
-        BlockState below = level.getBlockState(new BlockPos(ax, ay - 1, az));
-        if (!below.is(Blocks.GRASS_BLOCK) && !below.is(Blocks.DIRT) && !below.is(Blocks.COARSE_DIRT))
-            return;
+    private static boolean isSoil(BlockState state) {
+        return state.is(Blocks.GRASS_BLOCK) || state.is(Blocks.DIRT)
+                || state.is(Blocks.COARSE_DIRT) || state.is(Blocks.PODZOL);
+    }
 
+    private static boolean isReplaceable(BlockState state) {
+        return state.isAir() || state.is(Blocks.SHORT_GRASS) || state.is(Blocks.TALL_GRASS)
+                || state.is(Blocks.FERN) || state.is(Blocks.LARGE_FERN)
+                || state.is(Blocks.VINE) || state.is(Blocks.POPPY)
+                || state.is(Blocks.DANDELION) || state.is(Blocks.OXEYE_DAISY);
+    }
+
+    private static final int[][] ANCHORS = {{4, 5}, {4, 4}, {6, 4}};
+
+    public static boolean tryPlace(WorldGenLevel level, int ax, int ay, int az,
+                                   double seedMix, boolean preferSmall) {
         long cs = Double.doubleToLongBits(seedMix)
                 ^ ((long) ax * 982451653L)
                 ^ ((long) az * 718364721L)
                 ^ ((long) ay * 123456789L);
         Random rng = new Random(cs);
+        int variant = preferSmall ? 1 : rng.nextInt(ALL.length);
+        int[][] source = ALL[variant];
+        int anchorX = ANCHORS[variant][0];
+        int anchorZ = ANCHORS[variant][1];
+        int turns = rng.nextInt(4);
+        int[][] blocks = new int[source.length][4];
 
-        int v = rng.nextInt(3);
-        int[][] blocks = ALL[v];
-
-        // Используем MutableBlockPos вместо new BlockPos в цикле
-        BlockPos.MutableBlockPos mPos = new BlockPos.MutableBlockPos();
-        for (int[] b : blocks) {
-            int dx = b[0], dy = b[1], dz = b[2], leaf = b[3];
-            BlockState st = leaf == 1 ? WOOD : LEAF;
-            mPos.set(ax + dx, ay + dy, az + dz);
-            level.setBlock(mPos, st, 2);
+        // Нормализуем шаблон относительно реального основания ствола и поворачиваем.
+        // Благодаря этому ax/az — точка посадки, а не случайный угол большого шаблона.
+        for (int i = 0; i < source.length; i++) {
+            int x = source[i][0] - anchorX;
+            int z = source[i][2] - anchorZ;
+            for (int turn = 0; turn < turns; turn++) {
+                int oldX = x;
+                x = -z;
+                z = oldX;
+            }
+            blocks[i][0] = x;
+            blocks[i][1] = source[i][1];
+            blocks[i][2] = z;
+            blocks[i][3] = source[i][3];
         }
 
-        // vines on exposed faces
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         for (int[] b : blocks) {
-            int dx = b[0], dy = b[1], dz = b[2];
-            mPos.set(ax + dx, ay + dy, az + dz);
-            for (Direction dir : Direction.Plane.HORIZONTAL) {
-                if (rng.nextDouble() > 0.22) continue;
-                BlockPos nb = mPos.relative(dir);
-                if (!level.getBlockState(nb).isAir()) continue;
-                BooleanProperty prop = VineBlock.getPropertyForFace(dir.getOpposite());
-                level.setBlock(nb, Blocks.VINE.defaultBlockState().setValue(prop, true), 2);
+            int x = ax + b[0], y = ay + b[1], z = az + b[2];
+            pos.set(x, y, z);
+            if (!isReplaceable(level.getBlockState(pos))) return false;
+
+            // Все части ствола на нулевом слое должны иметь реальную опору.
+            if (b[3] == 1 && b[1] == 0) {
+                pos.set(x, y - 1, z);
+                if (!isSoil(level.getBlockState(pos))) return false;
             }
         }
+
+        // Запись начинается только после успешного preflight всего преобразованного дерева.
+        for (int[] b : blocks) {
+            pos.set(ax + b[0], ay + b[1], az + b[2]);
+            level.setBlock(pos, b[3] == 1 ? WOOD : LEAF, 2);
+        }
+
+        for (int[] b : blocks) {
+            pos.set(ax + b[0], ay + b[1], az + b[2]);
+            for (Direction dir : Direction.Plane.HORIZONTAL) {
+                if (rng.nextDouble() > 0.14) continue;
+                BlockPos neighbor = pos.relative(dir);
+                if (!level.getBlockState(neighbor).isAir()) continue;
+                BooleanProperty prop = VineBlock.getPropertyForFace(dir.getOpposite());
+                level.setBlock(neighbor, Blocks.VINE.defaultBlockState().setValue(prop, true), 2);
+            }
+        }
+        return true;
+    }
+
+    public static boolean tryPlace(WorldGenLevel level, int ax, int ay, int az, double seedMix) {
+        return tryPlace(level, ax, ay, az, seedMix, false);
     }
 }

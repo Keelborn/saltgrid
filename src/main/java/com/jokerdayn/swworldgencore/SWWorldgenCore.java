@@ -27,6 +27,7 @@ import net.neoforged.neoforge.registries.DeferredBlock;
 import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
+import net.minecraft.nbt.CompoundTag;
 import com.jokerdayn.swworldgencore.block.ShellBlock;
 import com.jokerdayn.swworldgencore.block.GroundDecorationBlock;
 import com.jokerdayn.swworldgencore.block.PalmSaplingBlock;
@@ -149,6 +150,77 @@ public class SWWorldgenCore {
                     serverLevel, null) + 1;
             player.teleportTo(fx + 0.5, surfaceY, fz + 0.5);
             ctx.getSource().sendSuccess(() -> Component.literal("Island at " + fx + " " + fz + " y=" + surfaceY), false);
+            return 1;
+        }));
+
+        dispatcher.register(Commands.literal("boulder").executes(ctx -> {
+            ServerPlayer player = ctx.getSource().getPlayerOrException();
+
+            net.minecraft.server.level.ServerLevel serverLevel =
+                    player.getServer().getLevel(player.level().dimension());
+            net.minecraft.world.level.chunk.ChunkGenerator gen =
+                    serverLevel.getChunkSource().getGenerator();
+
+            if (!(gen instanceof OceanChunkGenerator oceanGen)) {
+                ctx.getSource().sendSuccess(() -> Component.literal("Not an ocean world"), false);
+                return 0;
+            }
+
+            int[][] positions = oceanGen.getSpawnBoulderPositions();
+            int total = positions.length;
+
+            // Загрузить посещённые валуны из persistent data
+            CompoundTag data = player.getPersistentData();
+            CompoundTag visited = data.getCompound("swworldgencore:visited_boulders");
+
+            // Найти ближайший непосещённый валун
+            int px = (int) player.getX(), pz = (int) player.getZ();
+            double bestDist = Double.MAX_VALUE;
+            int bestIdx = -1;
+            for (int i = 0; i < total; i++) {
+                int bx = positions[i][0], bz = positions[i][1];
+                String key = bx + "," + bz;
+                if (visited.contains(key)) continue;
+                double d = (bx - px) * (double) (bx - px) + (bz - pz) * (double) (bz - pz);
+                if (d < bestDist) {
+                    bestDist = d;
+                    bestIdx = i;
+                }
+            }
+
+            int visitedCount = visited.getAllKeys().size();
+
+            if (bestIdx == -1) {
+                // Все посещены — сбросить и начать заново
+                visited.getAllKeys().forEach(visited::remove);
+                data.put("swworldgencore:visited_boulders", visited);
+                ctx.getSource().sendSuccess(() ->
+                    Component.literal("All " + total + " boulders visited! Reset. Teleporting to nearest..."), false);
+                // Найти ближайший заново
+                bestDist = Double.MAX_VALUE;
+                for (int i = 0; i < total; i++) {
+                    int bx = positions[i][0], bz = positions[i][1];
+                    double d = (bx - px) * (double) (bx - px) + (bz - pz) * (double) (bz - pz);
+                    if (d < bestDist) {
+                        bestDist = d;
+                        bestIdx = i;
+                    }
+                }
+            }
+
+            int bx = positions[bestIdx][0], bz = positions[bestIdx][1];
+            int surfaceY = gen.getBaseHeight(bx, bz,
+                    net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING,
+                    serverLevel, null) + 1;
+
+            // Пометить как посещённый
+            visited.putBoolean(bx + "," + bz, true);
+            data.put("swworldgencore:visited_boulders", visited);
+
+            player.teleportTo(bx + 0.5, surfaceY, bz + 0.5);
+            ctx.getSource().sendSuccess(() ->
+                Component.literal("Boulders on spawn: " + total + " | Visited: " + (visitedCount + 1) + "/" + total
+                    + " | Teleported to " + bx + " " + bz + " y=" + surfaceY), false);
             return 1;
         }));
     }
