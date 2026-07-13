@@ -2,6 +2,7 @@ package com.jokerdayn.swworldgencore.worldgen;
 
 import com.mojang.serialization.MapCodec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
+import java.util.Optional;
 import java.util.stream.Stream;
 import net.minecraft.core.Holder;
 import net.minecraft.core.HolderGetter;
@@ -16,15 +17,18 @@ public class OceanBiomeSource extends BiomeSource {
         RecordCodecBuilder.mapCodec(instance ->
             instance
                 .group(
-                    Biome.CODEC.fieldOf("ocean").forGetter(s -> s.ocean),
+                    Biome.CODEC.fieldOf("ocean").forGetter(source -> source.ocean),
                     Biome.CODEC.fieldOf("deep_ocean").forGetter(
-                        s -> s.deepOcean
+                        source -> source.deepOcean
                     ),
-                    Biome.CODEC.fieldOf("beach").forGetter(s -> s.beach),
-                    Biome.CODEC.fieldOf("tropics").forGetter(s -> s.tropics),
-                    Biome.CODEC.fieldOf("savanna").forGetter(s -> s.savanna)
+                    Biome.CODEC.fieldOf("beach").forGetter(source -> source.beach),
+                    Biome.CODEC.fieldOf("tropics").forGetter(source -> source.tropics),
+                    Biome.CODEC.fieldOf("savanna").forGetter(source -> source.savanna),
+                    Biome.CODEC.optionalFieldOf("volcano").forGetter(
+                        source -> Optional.of(source.volcano)
+                    )
                 )
-                .apply(instance, OceanBiomeSource::new)
+                .apply(instance, OceanBiomeSource::fromCodec)
         );
 
     private final Holder<Biome> ocean;
@@ -32,6 +36,7 @@ public class OceanBiomeSource extends BiomeSource {
     private final Holder<Biome> beach;
     private final Holder<Biome> tropics;
     private final Holder<Biome> savanna;
+    private final Holder<Biome> volcano;
 
     private volatile OceanChunkGenerator generator;
 
@@ -40,13 +45,33 @@ public class OceanBiomeSource extends BiomeSource {
         Holder<Biome> deepOcean,
         Holder<Biome> beach,
         Holder<Biome> tropics,
-        Holder<Biome> savanna
+        Holder<Biome> savanna,
+        Holder<Biome> volcano
     ) {
         this.ocean = ocean;
         this.deepOcean = deepOcean;
         this.beach = beach;
         this.tropics = tropics;
         this.savanna = savanna;
+        this.volcano = volcano;
+    }
+
+    private static OceanBiomeSource fromCodec(
+        Holder<Biome> ocean,
+        Holder<Biome> deepOcean,
+        Holder<Biome> beach,
+        Holder<Biome> tropics,
+        Holder<Biome> savanna,
+        Optional<Holder<Biome>> volcano
+    ) {
+        return new OceanBiomeSource(
+            ocean,
+            deepOcean,
+            beach,
+            tropics,
+            savanna,
+            volcano.orElse(savanna)
+        );
     }
 
     public static OceanBiomeSource create(HolderGetter<Biome> biomes) {
@@ -55,12 +80,13 @@ public class OceanBiomeSource extends BiomeSource {
             biomes.getOrThrow(ModBiomes.DEEP_OCEAN),
             biomes.getOrThrow(ModBiomes.BEACH),
             biomes.getOrThrow(ModBiomes.TROPICS),
-            biomes.getOrThrow(ModBiomes.SAVANNA)
+            biomes.getOrThrow(ModBiomes.SAVANNA),
+            biomes.getOrThrow(ModBiomes.VOLCANO)
         );
     }
 
-    void attachGenerator(OceanChunkGenerator gen) {
-        this.generator = gen;
+    void attachGenerator(OceanChunkGenerator generator) {
+        this.generator = generator;
     }
 
     @Override
@@ -70,25 +96,27 @@ public class OceanBiomeSource extends BiomeSource {
 
     @Override
     protected Stream<Holder<Biome>> collectPossibleBiomes() {
-        return Stream.of(ocean, deepOcean, beach, tropics, savanna);
+        return Stream.of(ocean, deepOcean, beach, tropics, savanna, volcano);
     }
 
     @Override
     public Holder<Biome> getNoiseBiome(
-        int qx,
-        int qy,
-        int qz,
+        int quartX,
+        int quartY,
+        int quartZ,
         Climate.Sampler sampler
     ) {
-        OceanChunkGenerator gen = this.generator;
-        if (gen == null) return ocean;
-        int x = QuartPos.toBlock(qx) + 2;
-        int z = QuartPos.toBlock(qz) + 2;
-        return switch (gen.classifyBiome(x, z)) {
+        OceanChunkGenerator attachedGenerator = this.generator;
+        if (attachedGenerator == null) return ocean;
+
+        int x = QuartPos.toBlock(quartX) + 2;
+        int z = QuartPos.toBlock(quartZ) + 2;
+        return switch (attachedGenerator.classifyBiome(x, z)) {
             case DEEP_OCEAN -> deepOcean;
             case BEACH -> beach;
             case TROPICS -> tropics;
             case SAVANNA -> savanna;
+            case VOLCANO -> volcano;
             default -> ocean;
         };
     }

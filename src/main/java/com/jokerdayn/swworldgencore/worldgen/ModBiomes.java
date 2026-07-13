@@ -12,6 +12,7 @@ public class ModBiomes {
     public static final ResourceKey<Biome> BEACH      = key("beach");
     public static final ResourceKey<Biome> TROPICS    = key("tropics");
     public static final ResourceKey<Biome> SAVANNA    = key("savanna");
+    public static final ResourceKey<Biome> VOLCANO    = key("volcano");
 
     private static ResourceKey<Biome> key(String name) {
         return ResourceKey.create(Registries.BIOME,

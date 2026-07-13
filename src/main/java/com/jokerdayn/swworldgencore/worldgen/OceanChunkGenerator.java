@@ -1,3 +1,5 @@
+//oceanChunkGenerator
+
 package com.jokerdayn.swworldgencore.worldgen;
 
 import com.jokerdayn.swworldgencore.SWWorldgenCore;
@@ -5,13 +7,20 @@ import com.jokerdayn.swworldgencore.block.GroundDecorationBlock;
 import com.jokerdayn.swworldgencore.block.ShellBlock;
 import com.mojang.serialization.Codec;
 import com.mojang.serialization.MapCodec;
+import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.context.CommandContext;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.commands.Commands;
 import net.minecraft.core.BlockPos;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.level.WorldGenRegion;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.ChunkPos;
@@ -33,9 +42,16 @@ import net.minecraft.world.level.levelgen.GenerationStep;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.levelgen.RandomState;
 import net.minecraft.world.level.levelgen.blending.Blender;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+@EventBusSubscriber(
+    modid = SWWorldgenCore.MODID,
+    bus = EventBusSubscriber.Bus.GAME
+)
 public class OceanChunkGenerator extends ChunkGenerator {
 
     private static final Logger log = LoggerFactory.getLogger("SWWorldgenCore");
@@ -45,6 +61,8 @@ public class OceanChunkGenerator extends ChunkGenerator {
     private static final AtomicLong lastLogTime = new AtomicLong(0);
 
     private static final int BASE_FLOOR = 25;
+    private static final int VOLCANO_COMMAND_SEARCH_RADIUS = 64;
+    private static final int VOLCANO_COMMAND_SAFE_RADIUS = 10;
 
     private static final double SPAWN_ISLAND_RADIUS = 170.0;
     private static final double SPAWN_ISLAND_FEATHER = 120.0;
@@ -97,7 +115,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
     private static final class ColumnCache {
 
         final int[] floor = new int[256];
-        final byte[] flags = new byte[256]; // bit0 = isIsland
+        final byte[] flags = new byte[256]; // bit0=island, bit1=volcano, bit2=crater
     }
 
     private static final ConcurrentHashMap<Long, ColumnCache> DECOR_CACHE =
@@ -168,7 +186,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
         return seedOffsets[salt & 0xFF] * scale;
     }
 
-    // Прямая з��пись в секцию
+    // Прямая з  пись в секцию
     private static void setDirect(
         ChunkAccess chunk,
         int lx,
@@ -327,6 +345,81 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
     private static final int CELL = 2048;
 
+    // Редкие дальние grid-острова становятся активными вулканами.
+    private static final double VOLCANO_CHANCE = 0.085;
+    private static final double VOLCANO_MIN_DISTANCE = 700.0;
+    private static final double VOLCANO_CONE_HEIGHT = 73.0;
+    private static final double VOLCANO_CRATER_RADIUS = 0.205;
+    private static final int VOLCANO_LAVA_ABOVE_SEA = 57;
+    private static final BlockState VOLCANO_REWARD_BLOCK =
+        Blocks.DIAMOND_BLOCK.defaultBlockState(); // TODO: заменить на блок «заскаленной магмы».
+
+    private static final int FLAG_ISLAND = 1;
+    private static final int FLAG_VOLCANO = 2;
+    private static final int FLAG_CRATER = 4;
+
+    /**
+     * Находит безопасную точку на внешней кромке ближайшего вулкана.
+     * Метод только перебирает детерминированные grid-ячейки и не загружает чанки.
+     */
+    public int[] findNearestVolcano(int px, int pz, int maxCellRadius) {
+        int originCellX = Math.floorDiv(px, CELL);
+        int originCellZ = Math.floorDiv(pz, CELL);
+        int[] best = null;
+        double bestDistanceSq = Double.MAX_VALUE;
+        int limit = Math.max(1, maxCellRadius);
+
+        for (int ring = 0; ring <= limit; ring++) {
+            for (int dx = -ring; dx <= ring; dx++) {
+                for (int dz = -ring; dz <= ring; dz++) {
+                    if (ring > 0 && Math.abs(dx) != ring && Math.abs(dz) != ring) continue;
+
+                    int cellX = originCellX + dx;
+                    int cellZ = originCellZ + dz;
+                    double radiusHash = hsh(cellX * 11, cellZ * 13);
+                    if (radiusHash > 0.6) continue;
+
+                    double radius = 80.0 + radiusHash * 120.0;
+                    int centerX =
+                        cellX * CELL +
+                        768 +
+                        (int) (hsh(cellX * 2, cellZ * 2) * 512);
+                    int centerZ =
+                        cellZ * CELL +
+                        768 +
+                        (int) (hsh(cellX * 2 + 1, cellZ * 2 + 1) * 512);
+                    double worldDistance = Math.sqrt(
+                        (double) centerX * centerX + (double) centerZ * centerZ
+                    );
+                    if (worldDistance < VOLCANO_MIN_DISTANCE) continue;
+                    if (hsh(cellX * 71 + 19, cellZ * 73 - 23) >= VOLCANO_CHANCE) continue;
+
+                    double distanceSq =
+                        (double) (centerX - px) * (centerX - px) +
+                        (double) (centerZ - pz) * (centerZ - pz);
+                    if (distanceSq >= bestDistanceSq) continue;
+
+                    // Точка чуть снаружи ��альдеры: вид на лавовое озеро без появления в лаве.
+                    double approachAngle = hsh(cellX * 131 + 7, cellZ * 137 - 11) * Math.PI * 2.0;
+                    double approachRadius = radius * (VOLCANO_CRATER_RADIUS + 0.105);
+                    int targetX = centerX + (int) Math.round(Math.cos(approachAngle) * approachRadius);
+                    int targetZ = centerZ + (int) Math.round(Math.sin(approachAngle) * approachRadius);
+
+                    bestDistanceSq = distanceSq;
+                    best = new int[] { targetX, targetZ, centerX, centerZ };
+                }
+            }
+
+            // С��едующее кольцо начинается как минимум в CELL блоках дальше.
+            // После дополнительного кольца текущий лучший кандидат уже не может проиграть.
+            if (best != null) {
+                double nextRingMin = Math.max(0.0, (ring - 1.0) * CELL);
+                if (nextRingMin * nextRingMin > bestDistanceSq) break;
+            }
+        }
+        return best;
+    }
+
     public int[] findNearestIslandCenter(int px, int pz) {
         int cellX = Math.floorDiv(px, CELL),
             cellZ = Math.floorDiv(pz, CELL);
@@ -361,7 +454,9 @@ public class OceanChunkGenerator extends ChunkGenerator {
             bestMaxHeight = 0,
             bestMtnChance = 1;
         int bestCx = 0,
-            bestCz = 0;
+            bestCz = 0,
+            bestIx = 0,
+            bestIz = 0;
 
         for (int dx = -1; dx <= 1; dx++) {
             for (int dz = -1; dz <= 1; dz++) {
@@ -385,6 +480,8 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 bestMtnChance = hsh(cx * 23, cz * 29);
                 bestCx = cx;
                 bestCz = cz;
+                bestIx = ix;
+                bestIz = iz;
             }
         }
 
@@ -392,6 +489,13 @@ public class OceanChunkGenerator extends ChunkGenerator {
             out[0] = 2.0;
             out[1] = 1.0;
             out[2] = 0.0;
+            if (out.length > 3) {
+                out[3] = 0.0;
+                out[4] = 0.0;
+                out[5] = 0.0;
+                out[6] = 0.0;
+                out[7] = 0.0;
+            }
             return;
         }
 
@@ -428,19 +532,102 @@ public class OceanChunkGenerator extends ChunkGenerator {
             h += bestMaxHeight * 1.5 * mtnR * (mtnMask * mtnMask) * falloff;
         }
 
+        double centerDistance = Math.sqrt((double) bestIx * bestIx + (double) bestIz * bestIz);
+        boolean volcano =
+            centerDistance >= VOLCANO_MIN_DISTANCE &&
+            hsh(bestCx * 71 + 19, bestCz * 73 - 23) < VOLCANO_CHANCE;
+        boolean crater = false;
+
+        if (volcano) {
+            double localX = x - bestIx;
+            double localZ = z - bestIz;
+            double warpX = (
+                fbm(
+                    x * 0.006 + bestCx * 43.0,
+                    z * 0.006 - bestCz * 37.0,
+                    3,
+                    2.0,
+                    0.52
+                ) - 0.5
+            ) * bestRadius * 0.24;
+            double warpZ = (
+                fbm(
+                    x * 0.006 - bestCx * 31.0 + 419.0,
+                    z * 0.006 + bestCz * 47.0 - 271.0,
+                    3,
+                    2.0,
+                    0.52
+                ) - 0.5
+            ) * bestRadius * 0.24;
+            double warpedX = localX + warpX;
+            double warpedZ = localZ + warpZ;
+            double angle = Math.atan2(warpedZ, warpedX);
+            double outline =
+                1.0 +
+                0.13 * Math.sin(angle * 3.0 + bestCx * 1.9) +
+                0.08 * Math.sin(angle * 5.0 - bestCz * 2.1) +
+                0.05 * Math.sin(angle * 8.0 + bestCx - bestCz);
+            double organicT = Math.sqrt(warpedX * warpedX + warpedZ * warpedZ) /
+                (bestRadius * outline);
+            t = organicT;
+            edge = Mth.clamp(1.0 - t, 0.0, 1.0);
+            falloff = edge * edge * (3.0 - 2.0 * edge);
+
+            double ribs = Math.pow(
+                0.5 + 0.5 * Math.sin(angle * 9.0 + bestCx * 1.7 - bestCz * 2.3),
+                3.0
+            );
+            double broken = fbm(
+                x * 0.018 + bestCx * 41.0,
+                z * 0.018 - bestCz * 37.0,
+                4,
+                2.0,
+                0.52
+            );
+            double cone = Math.pow(Mth.clamp(1.0 - t, 0.0, 1.0), 1.42);
+            double ribStrength = (ribs * 0.11 + broken * 0.08) * Mth.clamp(t / 0.22, 0.0, 1.0);
+            double volcanicH = 6.0 * falloff + VOLCANO_CONE_HEIGHT * cone * (0.90 + ribStrength);
+
+            // Кратер остаётся читаемой чашей; произвольность относится к форме
+            // острова и его подножия, а не к лавовому озеру.
+            double craterT = Math.sqrt(localX * localX + localZ * localZ) /
+                bestRadius;
+            double rimCenter = VOLCANO_CRATER_RADIUS;
+            double rim = Math.exp(-Math.pow((craterT - rimCenter) / 0.052, 2.0));
+            volcanicH += rim * (12.0 + ribs * 4.0 + broken * 3.0);
+
+            crater = craterT < VOLCANO_CRATER_RADIUS * 0.82;
+            if (crater) {
+                double inner = craterT / (VOLCANO_CRATER_RADIUS * 0.82);
+                double innerRough = fbm(x * 0.045 + 901.0, z * 0.045 - 607.0, 3, 2.0, 0.5);
+                // Дно чаши всегда ниже озера, а внутренняя стенка входит прямо в лаву.
+                volcanicH = VOLCANO_LAVA_ABOVE_SEA - 8.0 + inner * inner * 7.0 + innerRough;
+            }
+            // Не сохраняем исходный круглый grid-остров под вулканом: вся суша,
+            // включая пляж и травяное подножие, следует organicT.
+            h = volcanicH;
+        }
+
         out[0] = t;
         out[1] = bestRadius;
         out[2] = h;
+        if (out.length > 3) {
+            out[3] = volcano ? 1.0 : 0.0;
+            out[4] = crater ? 1.0 : 0.0;
+            out[5] = bestIx;
+            out[6] = bestIz;
+            out[7] = volcano ? seaLevel + VOLCANO_LAVA_ABOVE_SEA : 0.0;
+        }
     }
 
     private double gridIslandH(int x, int z) {
-        double[] out = new double[3];
+        double[] out = new double[8];
         gridIslandSample(x, z, out);
         return out[2];
     }
 
     private double gridIslandDist(int x, int z) {
-        double[] out = new double[3];
+        double[] out = new double[8];
         gridIslandSample(x, z, out);
         return out[0];
     }
@@ -745,6 +932,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
         BEACH,
         TROPICS,
         SAVANNA,
+        VOLCANO,
     }
 
     private static final ConcurrentHashMap<Long, BiomeCategory> BIOME_CACHE =
@@ -796,7 +984,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
     };
 
     /**
-     * Пляж = близость к реальной воде. Сканируем 8 направлений: е��ли в пре��елах
+     * Пляж = близость к реальной воде. Сканируем 8 направлений: е  ли в пре  елах
      * beachWidth есть колонка с fl < seaLevel — это пляж. Колонка у самой кромки
      * всегда находит воду на расстоянии 1, поэтому песок гарантированно доходит
      * до океана без разрывов. Высота используется только чтобы убрать песок
@@ -818,7 +1006,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
     /**
      * Определяет, является ли позиция "проплешиной" (tropics) на острове.
-     * Генерирует МАКСИМУМ 2 центра проплешин на основе хеша центра острова.
+     * Генерирует МАКСИМУМ 2 центра проплешин на основе х��ша центра острова.
      * Проплешины большие: 35-60% от радиуса острова.
      */
     private boolean isIslandClearing(int x, int z) {
@@ -939,7 +1127,12 @@ public class OceanChunkGenerator extends ChunkGenerator {
         int fl = floorAt(x, z);
 
         BiomeCategory result;
-        if (fl < seaLevel) {
+        double[] gridSample = new double[8];
+        gridIslandSample(x, z, gridSample);
+        boolean volcanicLand = gridSample[3] > 0.5 && fl >= seaLevel;
+        if (volcanicLand) {
+            result = BiomeCategory.VOLCANO;
+        } else if (fl < seaLevel) {
             result =
                 seaLevel - fl > 28
                     ? BiomeCategory.DEEP_OCEAN
@@ -1060,7 +1253,10 @@ public class OceanChunkGenerator extends ChunkGenerator {
         double[][] grids = new double[18][18];
         double[][] gridDi = new double[18][18];
         double[][] gridRi = new double[18][18];
-        double[] grid = new double[3];
+        boolean[][] volcanoes = new boolean[18][18];
+        boolean[][] craters = new boolean[18][18];
+        int[][] lavaLevels = new int[18][18];
+        double[] grid = new double[8];
 
         ColumnCache colCache = new ColumnCache();
         int maxFl = Integer.MIN_VALUE;
@@ -1082,6 +1278,9 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 grids[lx + 1][lz + 1] = gridH;
                 gridDi[lx + 1][lz + 1] = gridD;
                 gridRi[lx + 1][lz + 1] = gridR;
+                volcanoes[lx + 1][lz + 1] = grid[3] > 0.5;
+                craters[lx + 1][lz + 1] = grid[4] > 0.5;
+                lavaLevels[lx + 1][lz + 1] = (int) Math.round(grid[7]);
                 heights[lx + 1][lz + 1] = fl;
 
                 if (fl > maxFl) maxFl = fl;
@@ -1089,9 +1288,10 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 if (lx >= 0 && lx < 16 && lz >= 0 && lz < 16) {
                     int idx = (lx << 4) | lz;
                     colCache.floor[idx] = fl;
-                    colCache.flags[idx] = (byte) (
-                        spRaw > 0.0 || gridH > 0.5 ? 1 : 0
-                    );
+                    int flags = spRaw > 0.0 || gridH > 0.5 ? FLAG_ISLAND : 0;
+                    if (grid[3] > 0.5) flags |= FLAG_VOLCANO;
+                    if (grid[4] > 0.5) flags |= FLAG_CRATER;
+                    colCache.flags[idx] = (byte) flags;
                 }
             }
         }
@@ -1126,6 +1326,9 @@ public class OceanChunkGenerator extends ChunkGenerator {
                     double gridHi = grids[lx + 1][lz + 1];
                     double gridDist = gridDi[lx + 1][lz + 1];
                     double gridRad = gridRi[lx + 1][lz + 1];
+                    boolean volcano = volcanoes[lx + 1][lz + 1];
+                    boolean crater = craters[lx + 1][lz + 1];
+                    int lavaLevel = lavaLevels[lx + 1][lz + 1];
 
                     boolean onSlope =
                         fl < heights[lx][lz + 1] ||
@@ -1135,7 +1338,8 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
                     boolean onIsland = spRaw > 0 || gridHi > 0.5;
                     int dirtLayers;
-                    if (fl >= seaLevel && onIsland) dirtLayers = 3;
+                    if (volcano) dirtLayers = gridDist > 0.70 ? 3 : 2;
+                    else if (fl >= seaLevel && onIsland) dirtLayers = 3;
                     else if (st < maxT) dirtLayers = 2;
                     else dirtLayers = 0;
 
@@ -1151,38 +1355,112 @@ public class OceanChunkGenerator extends ChunkGenerator {
                         STONE_S
                     );
 
+                    BlockState volcanicDecoration = STONE_S;
+                    if (volcano && gridDist <= 0.70) {
+                        double layerRock = hsh(wx * 43 + fl, wz * 47 - fl);
+                        double layerFissure = ridgeNoise(
+                            wx * 0.055 + 811.0,
+                            wz * 0.055 - 419.0,
+                            2,
+                            2.0,
+                            0.5
+                        );
+                        if (crater && fl <= lavaLevel + 1 && layerRock < 0.18) {
+                            volcanicDecoration = Blocks.MAGMA_BLOCK.defaultBlockState();
+                        } else if (layerFissure > 0.91 && layerRock < 0.22) {
+                            volcanicDecoration = Blocks.MAGMA_BLOCK.defaultBlockState();
+                        } else if (layerRock < 0.16) {
+                            volcanicDecoration = Blocks.BLACKSTONE.defaultBlockState();
+                        } else if (layerRock < 0.34) {
+                            volcanicDecoration = Blocks.SMOOTH_BASALT.defaultBlockState();
+                        } else if (gridDist > 0.58 && layerRock < 0.62) {
+                            volcanicDecoration = Blocks.TUFF.defaultBlockState();
+                        } else {
+                            volcanicDecoration = Blocks.BASALT.defaultBlockState();
+                        }
+                    }
+
                     if (dirtLayers > 0) {
-                        BlockState sub = subSurf(
+                        if (volcano && gridDist <= 0.70) {
+                            for (int depth = 1; depth <= dirtLayers; depth++) {
+                                double mix = hsh(
+                                    wx * 167 + depth * 13,
+                                    wz * 173 - depth * 17
+                                );
+                                BlockState transition = depth <= 2 && mix < (depth == 1 ? 0.68 : 0.34)
+                                    ? volcanicDecoration
+                                    : STONE_S;
+                                setDirect(chunk, lx, fl - depth, lz, transition);
+                            }
+                        } else {
+                            BlockState sub = volcano
+                                ? Blocks.DIRT.defaultBlockState()
+                                : subSurf(
+                                    wx,
+                                    wz,
+                                    fl,
+                                    st,
+                                    spRaw,
+                                    gridHi,
+                                    beach
+                                );
+                            fillYRange(
+                                chunk,
+                                lx,
+                                lz,
+                                fl - dirtLayers,
+                                fl - 1,
+                                sub != null ? sub : STONE_S
+                            );
+                        }
+                    }
+
+                    BlockState surf;
+                    if (volcano) {
+                        double rock = hsh(wx * 43 + fl, wz * 47 - fl);
+                        double fissure = ridgeNoise(wx * 0.055 + 811.0, wz * 0.055 - 419.0, 2, 2.0, 0.5);
+                        if (gridDist > 0.90 || fl <= seaLevel + 2) {
+                            surf = rock < 0.24
+                                ? Blocks.GRAVEL.defaultBlockState()
+                                : Blocks.SAND.defaultBlockState();
+                        } else if (gridDist > 0.70) {
+                            surf = rock < 0.18
+                                ? Blocks.COARSE_DIRT.defaultBlockState()
+                                : Blocks.GRASS_BLOCK.defaultBlockState();
+                        } else {
+                            surf = volcanicDecoration;
+                        }
+                    } else {
+                        surf = pickSurf(
                             wx,
                             wz,
                             fl,
                             st,
-                            spRaw,
                             gridHi,
+                            gridDist,
                             beach
                         );
+                    }
+                    setDirect(chunk, lx, fl, lz, surf);
+                    hmOcean.update(lx, fl, lz, surf);
+                    hmSurface.update(lx, fl, lz, surf);
+
+                    if (crater && fl < lavaLevel) {
                         fillYRange(
                             chunk,
                             lx,
                             lz,
-                            fl - dirtLayers,
-                            fl - 1,
-                            sub != null ? sub : STONE_S
+                            fl + 1,
+                            lavaLevel,
+                            Blocks.LAVA.defaultBlockState()
+                        );
+                        hmSurface.update(
+                            lx,
+                            lavaLevel,
+                            lz,
+                            Blocks.LAVA.defaultBlockState()
                         );
                     }
-
-                    BlockState surf = pickSurf(
-                        wx,
-                        wz,
-                        fl,
-                        st,
-                        gridHi,
-                        gridDist,
-                        beach
-                    );
-                    setDirect(chunk, lx, fl, lz, surf);
-                    hmOcean.update(lx, fl, lz, surf);
-                    hmSurface.update(lx, fl, lz, surf);
 
                     if (fl < seaLevel) {
                         int waterFrom = fl + 1;
@@ -1313,8 +1591,9 @@ public class OceanChunkGenerator extends ChunkGenerator {
         int cx = cp.x,
             cz = cp.z;
 
-        // Валуны кладём ПЕРВЫМИ: мелкий декор ниже проверяет воздух над поверхностью,
-        // поэтому трава/цветы не полезут сквозь камень.
+        // Вулканические русла и шпили создаются первыми и заменяют обычный декор.
+        generateVolcanicFeatures(level, cx, cz);
+        // Валуны кладём до мелкого декора: трава/цветы не полезут сквозь камень.
         generateBoulders(level, cx, cz);
         // Деревья генерируются отдельным детерминированным проходом: сначала рощи,
         // затем мелкий декор заполняет оставшиеся свободные места.
@@ -1329,20 +1608,25 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
                 int fl;
                 boolean isIsland;
+                boolean isVolcano;
                 if (cache != null) {
                     int idx = (lx << 4) | lz;
                     fl = cache.floor[idx];
-                    isIsland = (cache.flags[idx] & 1) != 0;
+                    isIsland = (cache.flags[idx] & FLAG_ISLAND) != 0;
+                    isVolcano = (cache.flags[idx] & FLAG_VOLCANO) != 0;
                 } else {
                     double st = islandDist(wx, wz);
                     double spRaw = islandH(wx, wz, st);
-                    double gridH = gridIslandH(wx, wz);
+                    double[] gridSample = new double[8];
+                    gridIslandSample(wx, wz, gridSample);
+                    double gridH = gridSample[2];
                     fl = computeFloor(wx, wz, st, spRaw, gridH);
                     isIsland = spRaw > 0.0 || gridH > 0.5;
+                    isVolcano = gridSample[3] > 0.5;
                 }
 
                 if (fl < seaLevel) continue;
-                if (!isIsland) continue;
+                if (!isIsland || isVolcano) continue;
 
                 BlockPos surface = new BlockPos(wx, fl, wz);
                 boolean onSand = level.getBlockState(surface).is(Blocks.SAND);
@@ -1488,6 +1772,140 @@ public class OceanChunkGenerator extends ChunkGenerator {
     }
 
     // -------------------------------------------------------------------------
+    // Активный вулкан: лавовые русла, вторичные жерла и базальтовые шпили
+    // -------------------------------------------------------------------------
+
+    private void generateVolcanicFeatures(
+        WorldGenLevel level,
+        int chunkX,
+        int chunkZ
+    ) {
+        int minX = chunkX * 16;
+        int minZ = chunkZ * 16;
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        double[] sample = new double[8];
+
+        for (int lx = 0; lx < 16; lx++) {
+            for (int lz = 0; lz < 16; lz++) {
+                int wx = minX + lx;
+                int wz = minZ + lz;
+                gridIslandSample(wx, wz, sample);
+                if (sample[3] < 0.5) continue;
+
+                double t = sample[0];
+                int floor = floorAt(wx, wz);
+                double angle = Math.atan2(wz - sample[6], wx - sample[5]);
+                long volcanoHash = rawHash((int) sample[5] * 17, (int) sample[6] * 19);
+                int lavaLevel = (int) Math.round(sample[7]);
+
+                // Три маленьких обсидиановых выступа в кальдере. Центральный блок каждого
+                // пока служит placeholder для будущей «заскаленной магмы» из сборки.
+                boolean rewardIsland = false;
+                for (int island = 0; island < 3; island++) {
+                    double islandAngle = frac(volcanoHash >> (island * 15 + 5)) * Math.PI * 2.0;
+                    double islandDistance = sample[1] * (0.052 + island * 0.018);
+                    double islandX = sample[5] + Math.cos(islandAngle) * islandDistance;
+                    double islandZ = sample[6] + Math.sin(islandAngle) * islandDistance;
+                    double dx = wx - islandX;
+                    double dz = wz - islandZ;
+                    double distanceSq = dx * dx + dz * dz;
+                    double platformRadius = island == 0 ? 2.8 : 2.2;
+                    if (distanceSq <= platformRadius * platformRadius) {
+                        pos.set(wx, lavaLevel + 1, wz);
+                        level.setBlock(
+                            pos,
+                            distanceSq < 0.55
+                                ? VOLCANO_REWARD_BLOCK
+                                : Blocks.OBSIDIAN.defaultBlockState(),
+                            2
+                        );
+                        rewardIsland = true;
+                        break;
+                    }
+                }
+                if (rewardIsland) continue;
+
+                // Редкая трава оживляет зелёное кольцо, не поднимаясь на горячий склон.
+                if (t > 0.70 && t < 0.90 && hsh(wx * 149, wz * 151) < 0.11) {
+                    pos.set(wx, floor, wz);
+                    if (level.getBlockState(pos).is(Blocks.GRASS_BLOCK)) {
+                        pos.set(wx, floor + 1, wz);
+                        if (level.getBlockState(pos).isAir()) {
+                            level.setBlock(
+                                pos,
+                                hsh(wx * 157, wz * 163) < 0.18
+                                    ? Blocks.FERN.defaultBlockState()
+                                    : Blocks.SHORT_GRASS.defaultBlockState(),
+                                2
+                            );
+                        }
+                    }
+                }
+
+                double nearestFlow = Math.PI;
+                for (int flow = 0; flow < 4; flow++) {
+                    double flowAngle = frac(volcanoHash >> (flow * 12)) * Math.PI * 2.0 - Math.PI;
+                    double meander = Math.sin(t * 31.0 + flow * 2.7) * 0.055;
+                    double delta = Math.abs(Math.atan2(
+                        Math.sin(angle - flowAngle - meander),
+                        Math.cos(angle - flowAngle - meander)
+                    ));
+                    nearestFlow = Math.min(nearestFlow, delta);
+                }
+
+                double channelWidth = 0.022 + (1.0 - t) * 0.018;
+                boolean inFlow = t > VOLCANO_CRATER_RADIUS * 0.78 && t < 0.84 && nearestFlow < channelWidth;
+                if (inFlow) {
+                    pos.set(wx, floor, wz);
+                    double edge = nearestFlow / channelWidth;
+                    BlockState channel;
+                    if (edge < 0.42 && t < 0.67) {
+                        channel = Blocks.LAVA.defaultBlockState();
+                    } else if (edge < 0.72) {
+                        channel = Blocks.MAGMA_BLOCK.defaultBlockState();
+                    } else {
+                        channel = hsh(wx * 101, wz * 103) < 0.45
+                            ? Blocks.OBSIDIAN.defaultBlockState()
+                            : Blocks.BLACKSTONE.defaultBlockState();
+                    }
+                    level.setBlock(pos, channel, 2);
+                    continue;
+                }
+
+                double feature = hsh(wx * 107 + floor, wz * 109 - floor);
+                if (t > 0.28 && t < 0.72 && feature < 0.0045) {
+                    int height = 3 + (int) (hsh(wx * 113, wz * 127) * 6.0);
+                    for (int y = 1; y <= height; y++) {
+                        int radius = y < height * 0.35 ? 1 : 0;
+                        for (int dx = -radius; dx <= radius; dx++) {
+                            for (int dz = -radius; dz <= radius; dz++) {
+                                if (Math.abs(dx) + Math.abs(dz) > radius + 1) continue;
+                                pos.set(wx + dx, floor + y, wz + dz);
+                                if (level.getBlockState(pos).isAir()) {
+                                    level.setBlock(
+                                        pos,
+                                        y == height && radius == 0
+                                            ? Blocks.BLACKSTONE.defaultBlockState()
+                                            : Blocks.BASALT.defaultBlockState(),
+                                        2
+                                    );
+                                }
+                            }
+                        }
+                    }
+                } else if (t > 0.34 && t < 0.62 && feature > 0.9965) {
+                    pos.set(wx, floor, wz);
+                    level.setBlock(pos, Blocks.MAGMA_BLOCK.defaultBlockState(), 2);
+                    pos.set(wx, floor + 1, wz);
+                    if (level.getBlockState(pos).isAir()) {
+                        level.setBlock(pos, Blocks.FIRE.defaultBlockState(), 2);
+                    }
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Саванна: рощи и открытые поля
     // -------------------------------------------------------------------------
 
@@ -1586,12 +2004,12 @@ public class OceanChunkGenerator extends ChunkGenerator {
         return (h & 0xFFFFFFL) / (double) 0x1000000;
     }
 
-    /** Хеш, зависящий от 3 координат — для ранд��ма руды внутри валуна. */
+    /** Хеш, зависящий от 3 координат — для ранд  ма руды внутри валуна. */
     private long hash3(int x, int y, int z) {
         return rawHash(x * 31 + y * 17, z * 13 - y * 7);
     }
 
-    /** Выбор типа руды для конкретного валуна: медь / железо / уголь. */
+    /** Выбор типа руды для конкретного валуна: медь / желез�� / уголь. */
     private BlockState pickOre(long boulderHash) {
         double f = frac(boulderHash >> 12);
         if (f < 0.34) return Blocks.COPPER_ORE.defaultBlockState();
@@ -1631,6 +2049,11 @@ public class OceanChunkGenerator extends ChunkGenerator {
                     gcz * CELL +
                     768 +
                     (int) (hsh(gcx * 2 + 1, gcz * 2 + 1) * 512);
+                double centerDistance = Math.sqrt((double) ix * ix + (double) iz * iz);
+                if (
+                    centerDistance >= VOLCANO_MIN_DISTANCE &&
+                    hsh(gcx * 71 + 19, gcz * 73 - 23) < VOLCANO_CHANCE
+                ) continue; // вулкан получает собственные потоки и шпили
                 if (
                     diskTouchesChunk(
                         ix,
@@ -1866,9 +2289,9 @@ public class OceanChunkGenerator extends ChunkGenerator {
     }
 
     /**
-     * Кладёт один валун, обрезая запись строго в гран��цах текущего чанка.
+     * Кладёт один валун, обрезая запись строго в гран  цах текущего чанка.
      * Форма — приплюснутый эллипсоид с шумовой асимметрией; каждая колонка тянется
-     * от (земл�� - BOULDER_EMBED) до макушки купола, поэтому камень всегда прирос к
+     * от (земл   - BOULDER_EMBED) до макушки купола, поэтому камень всегда прирос к
      * земле: нет висячих блоков, дыр и «торчащих из-под земли» уродцев.
      */
     private void placeBoulder(
@@ -1964,7 +2387,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                         BOULDER_MAX_ORE_FRACTION
                     );
 
-                    // Крупный 3D-шум собирает равномерно доступную руду в прожилки по
+                    // Крупный 3D-шум собир����ет равномерно доступную руду в прожилки по
                     // всему телу. Hash разбивает их края, сохраняя решение бесшовным.
                     double veinNoise = fbm(
                         wx * 0.24 + nOff + y * 0.07,
@@ -1987,7 +2410,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
                     p.set(wx, y, wz);
                     BlockState cur = level.getBlockState(p);
-                    // Пишем только по грунту/траве/песку/воздуху — не портим постройки и деревья.
+                    // Пишем только по грунту/траве/пес��у/воздуху — не портим постройки и деревья.
                     if (
                         cur.isAir() ||
                         cur.is(Blocks.GRASS_BLOCK) ||
@@ -2032,8 +2455,11 @@ public class OceanChunkGenerator extends ChunkGenerator {
         if (level instanceof WorldGenLevel wgl) syncSeedFromLevel(wgl);
         double st = islandDist(x, z);
         double spRaw = islandH(x, z, st);
-        double gridH = gridIslandH(x, z);
-        return computeFloor(x, z, st, spRaw, gridH) + 1;
+        double[] grid = new double[8];
+        gridIslandSample(x, z, grid);
+        int floor = computeFloor(x, z, st, spRaw, grid[2]);
+        if (grid[4] > 0.5) floor = Math.max(floor, (int) Math.round(grid[7]));
+        return floor + 1;
     }
 
     @Override
@@ -2045,16 +2471,20 @@ public class OceanChunkGenerator extends ChunkGenerator {
     ) {
         double st = islandDist(x, z);
         double spRaw = islandH(x, z, st);
-        double[] grid = new double[3];
+        double[] grid = new double[8];
         gridIslandSample(x, z, grid);
         double gridDi = grid[0],
             gridRi = grid[1],
             gridHi = grid[2];
+        boolean volcano = grid[3] > 0.5;
+        boolean crater = grid[4] > 0.5;
+        int lavaLevel = (int) Math.round(grid[7]);
         int fl = computeFloor(x, z, st, spRaw, gridHi);
         double maxT = 1.0 + SPAWN_ISLAND_FEATHER / SPAWN_ISLAND_RADIUS;
         boolean onIsl = spRaw > 0 || gridHi > 0.5;
         int dirtLayers;
-        if (fl >= seaLevel && onIsl) dirtLayers = 3;
+        if (volcano) dirtLayers = gridDi > 0.70 ? 3 : 2;
+        else if (fl >= seaLevel && onIsl) dirtLayers = 3;
         else if (st < maxT) dirtLayers = 2;
         else dirtLayers = 0;
         boolean beach = isBeach(x, z, fl);
@@ -2073,11 +2503,67 @@ public class OceanChunkGenerator extends ChunkGenerator {
             } else if (y < fl - dirtLayers) {
                 col[y - minY] = Blocks.STONE.defaultBlockState();
             } else if (y < fl) {
-                BlockState sub = subSurf(x, z, fl, st, spRaw, gridHi, beach);
+                BlockState sub;
+                if (volcano && gridDi <= 0.70) {
+                    int depth = fl - y;
+                    double rock = hsh(x * 43 + fl, z * 47 - fl);
+                    double fissure = ridgeNoise(
+                        x * 0.055 + 811.0,
+                        z * 0.055 - 419.0,
+                        2,
+                        2.0,
+                        0.5
+                    );
+                    BlockState decoration;
+                    if (crater && fl <= lavaLevel + 1 && rock < 0.18) {
+                        decoration = Blocks.MAGMA_BLOCK.defaultBlockState();
+                    } else if (fissure > 0.91 && rock < 0.22) {
+                        decoration = Blocks.MAGMA_BLOCK.defaultBlockState();
+                    } else if (rock < 0.16) {
+                        decoration = Blocks.BLACKSTONE.defaultBlockState();
+                    } else if (rock < 0.34) {
+                        decoration = Blocks.SMOOTH_BASALT.defaultBlockState();
+                    } else if (gridDi > 0.58 && rock < 0.62) {
+                        decoration = Blocks.TUFF.defaultBlockState();
+                    } else {
+                        decoration = Blocks.BASALT.defaultBlockState();
+                    }
+                    double mix = hsh(x * 167 + depth * 13, z * 173 - depth * 17);
+                    sub = depth <= 2 && mix < (depth == 1 ? 0.68 : 0.34)
+                        ? decoration
+                        : Blocks.STONE.defaultBlockState();
+                } else {
+                    sub = volcano
+                        ? Blocks.DIRT.defaultBlockState()
+                        : subSurf(x, z, fl, st, spRaw, gridHi, beach);
+                }
                 col[y - minY] =
                     sub != null ? sub : Blocks.STONE.defaultBlockState();
             } else if (y == fl) {
-                col[y - minY] = pickSurf(x, z, fl, st, gridHi, gridDi, beach);
+                if (volcano) {
+                    double rock = hsh(x * 43 + fl, z * 47 - fl);
+                    if (gridDi > 0.90 || fl <= seaLevel + 2) {
+                        col[y - minY] = rock < 0.24
+                            ? Blocks.GRAVEL.defaultBlockState()
+                            : Blocks.SAND.defaultBlockState();
+                    } else if (gridDi > 0.70) {
+                        col[y - minY] = rock < 0.18
+                            ? Blocks.COARSE_DIRT.defaultBlockState()
+                            : Blocks.GRASS_BLOCK.defaultBlockState();
+                    } else {
+                        col[y - minY] = crater && fl <= lavaLevel + 1 && rock < 0.18
+                            ? Blocks.MAGMA_BLOCK.defaultBlockState()
+                            : rock < 0.20
+                                ? Blocks.BLACKSTONE.defaultBlockState()
+                                : rock < 0.38
+                                    ? Blocks.SMOOTH_BASALT.defaultBlockState()
+                                    : Blocks.BASALT.defaultBlockState();
+                    }
+                } else {
+                    col[y - minY] = pickSurf(x, z, fl, st, gridHi, gridDi, beach);
+                }
+            } else if (crater && y <= lavaLevel) {
+                col[y - minY] = Blocks.LAVA.defaultBlockState();
             } else if (y == fl + 1) {
                 if (fl >= seaLevel) {
                     col[y - minY] = Blocks.AIR.defaultBlockState();
@@ -2091,6 +2577,127 @@ public class OceanChunkGenerator extends ChunkGenerator {
             }
         }
         return new NoiseColumn(minY, col);
+    }
+
+    // -------------------------------------------------------------------------
+    // NeoForge-команда /volcano (OP level 2)
+    // -------------------------------------------------------------------------
+
+    @SubscribeEvent
+    public static void onRegisterCommands(RegisterCommandsEvent event) {
+        CommandDispatcher<CommandSourceStack> dispatcher = event.getDispatcher();
+        dispatcher.register(
+            Commands.literal("volcano")
+                .executes(OceanChunkGenerator::teleportToNearestVolcano)
+        );
+    }
+
+    private static int teleportToNearestVolcano(
+        CommandContext<CommandSourceStack> context
+    ) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
+        CommandSourceStack source = context.getSource();
+        if (!source.hasPermission(2)) {
+            source.sendFailure(Component.literal(
+                "Для команды /volcano необходим уровень прав оператора 2."
+            ));
+            return 0;
+        }
+        ServerPlayer player = source.getPlayerOrException();
+        ServerLevel level = player.serverLevel();
+
+        if (!(level.getChunkSource().getGenerator() instanceof OceanChunkGenerator generator)) {
+            source.sendFailure(Component.literal(
+                "Эта команда работает только в мире с OceanChunkGenerator."
+            ));
+            return 0;
+        }
+
+        generator.syncSeedFromLevel(level);
+        int[] volcano = generator.findNearestVolcano(
+            player.getBlockX(),
+            player.getBlockZ(),
+            VOLCANO_COMMAND_SEARCH_RADIUS
+        );
+        if (volcano == null) {
+            source.sendFailure(Component.literal(
+                "Вулкан не найден в пределах " +
+                (VOLCANO_COMMAND_SEARCH_RADIUS * CELL) +
+                " блоков."
+            ));
+            return 0;
+        }
+
+        int targetX = volcano[0];
+        int targetZ = volcano[1];
+        level.getChunk(targetX >> 4, targetZ >> 4);
+        BlockPos safe = findVolcanoTeleportPosition(level, targetX, targetZ);
+        if (safe == null) {
+            source.sendFailure(Component.literal(
+                "Вулкан найден, но безопасная точка телепортации не определена."
+            ));
+            return 0;
+        }
+
+        player.teleportTo(
+            level,
+            safe.getX() + 0.5,
+            safe.getY(),
+            safe.getZ() + 0.5,
+            player.getYRot(),
+            player.getXRot()
+        );
+        source.sendSuccess(
+            () -> Component.literal(
+                "Вулкан найден у X=" + volcano[2] +
+                ", Z=" + volcano[3] +
+                ". Телепортация на безопасную кромку."
+            ),
+            true
+        );
+        return 1;
+    }
+
+    private static BlockPos findVolcanoTeleportPosition(
+        ServerLevel level,
+        int originX,
+        int originZ
+    ) {
+        for (int radius = 0; radius <= VOLCANO_COMMAND_SAFE_RADIUS; radius++) {
+            for (int dx = -radius; dx <= radius; dx++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    if (
+                        radius > 0 &&
+                        Math.abs(dx) != radius &&
+                        Math.abs(dz) != radius
+                    ) continue;
+
+                    int x = originX + dx;
+                    int z = originZ + dz;
+                    int y = level.getHeight(
+                        Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
+                        x,
+                        z
+                    );
+                    BlockPos feet = new BlockPos(x, y, z);
+                    BlockState ground = level.getBlockState(feet.below());
+                    if (!isSafeVolcanoGround(ground)) continue;
+                    if (!level.getBlockState(feet).isAir()) continue;
+                    if (!level.getBlockState(feet.above()).isAir()) continue;
+                    return feet;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static boolean isSafeVolcanoGround(BlockState state) {
+        return !state.isAir() &&
+            state.getFluidState().isEmpty() &&
+            !state.is(Blocks.MAGMA_BLOCK) &&
+            !state.is(Blocks.FIRE) &&
+            !state.is(Blocks.SOUL_FIRE) &&
+            !state.is(Blocks.CAMPFIRE) &&
+            !state.is(Blocks.SOUL_CAMPFIRE);
     }
 
     @Override
