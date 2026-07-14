@@ -50,3 +50,9 @@ net/
 biomofplanty/
 .gitignore
 
+### Project specific ###
+.mimocode/
+IDEA.md
+node_modules/
+src_backup_c563a07/
+
