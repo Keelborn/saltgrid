@@ -1,25 +1,27 @@
 {
-  "has_precipitation": false,
-  "temperature": 1.35,
-  "downfall": 0.0,
+  "has_precipitation": true,
+  "temperature": 1.05,
+  "downfall": 0.68,
+  "temperature_modifier": "none",
   "effects": {
-    "fog_color": 7567475,
-    "water_color": 2501196,
-    "water_fog_color": 1513246,
-    "sky_color": 7434619,
-    "foliage_color": 6978628,
-    "grass_color": 7897177,
+    "fog_color": 12638463,
+    "water_color": 4159204,
+    "water_fog_color": 329011,
+    "sky_color": 7907327,
+    "foliage_color": 6780213,
+    "grass_color": 7582512,
+    "grass_color_modifier": "none",
     "particle": {
       "options": {
         "type": "minecraft:white_ash"
       },
-      "probability": 0.018
+      "probability": 0.0015
     },
     "mood_sound": {
       "sound": "minecraft:ambient.basalt_deltas.mood",
-      "tick_delay": 6000,
+      "tick_delay": 9000,
       "block_search_extent": 8,
-      "offset": 2.0
+      "offset": 1.5
     }
   },
   "spawners": {},
