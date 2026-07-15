@@ -348,11 +348,23 @@ public class OceanChunkGenerator extends ChunkGenerator {
     // Редкие дальние grid-острова становятся активными вулканами.
     private static final double VOLCANO_CHANCE = 0.085;
     private static final double VOLCANO_MIN_DISTANCE = 700.0;
-    private static final double VOLCANO_CONE_HEIGHT = 73.0;
-    private static final double VOLCANO_CRATER_RADIUS = 0.205;
-    private static final int VOLCANO_LAVA_ABOVE_SEA = 57;
+    private static final double VOLCANO_CONE_HEIGHT = 74.0;
+    /** Компактная кальдера на вершине широкого конуса. */
+    private static final double VOLCANO_CRATER_RADIUS = 0.165;
+    private static final double VOLCANO_LAVA_RADIUS = 0.137;
+    /** Узкий, но непрерывный каменный борт вокруг лавового озера. */
+    private static final double VOLCANO_RIM_OUTER_RADIUS = 0.225;
+    private static final int VOLCANO_RIM_CLEARANCE = 4;
+    /** Лава заметно ниже вершины: вулкан не превращается в высокий цилиндр. */
+    private static final int VOLCANO_LAVA_ABOVE_SEA = 39;
+    /** Паразитические конусы на склонах: как у Этны — маленькие боковые кратеры. */
+    private static final int VOLCANO_PARASITIC_CONES = 2;
+    private static final double VOLCANO_PARASITIC_HEIGHT = 13.0;
+    /** Эрозионные овраги (барранкосы), сбегающие по склону от кромки к подножию. */
+    private static final int VOLCANO_GULLY_COUNT = 7;
+    private static final double VOLCANO_GULLY_DEPTH = 4.5;
     private static final BlockState VOLCANO_REWARD_BLOCK =
-        Blocks.DIAMOND_BLOCK.defaultBlockState(); // TODO: заменить на блок «заскаленной магмы».
+        Blocks.DIAMOND_BLOCK.defaultBlockState(); // TODO: заменить на блок «раскалённой магмы».
 
     private static final int FLAG_ISLAND = 1;
     private static final int FLAG_VOLCANO = 2;
@@ -617,16 +629,79 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
             // Настоящий вулкан занимает только внутреннюю часть острова.
             // smoothstep создаёт широкое предгорье вместо резкой стены.
-            double coneEdge = 0.52 + (broken - 0.5) * 0.07;
-            double coneBlendRaw = Mth.clamp((coneEdge - t) / 0.17, 0.0, 1.0);
+            double coneEdge = 0.68 + (broken - 0.5) * 0.09;
+            double coneBlendRaw = Mth.clamp((coneEdge - t) / 0.27, 0.0, 1.0);
             double coneBlend = coneBlendRaw * coneBlendRaw * (3.0 - 2.0 * coneBlendRaw);
             double coneLocalT = Mth.clamp(t / Math.max(0.01, coneEdge), 0.0, 1.0);
-            double cone = Math.pow(1.0 - coneLocalT, 1.30);
-            double ribStrength = (ribs * 0.09 + broken * 0.06) * coneBlend;
+            // Вогнутый профиль настоящего стратовулкана (Фудзи, Майон): крутая
+            // вершина резко набирает высоту, а склон выполаживается в длинный
+            // пологий шлейф у подножия. Смесь двух степеней даёт именно эту
+            // классическую «трубу Гаусса» вместо прямого щита или башни.
+            double cone =
+                0.60 * Math.pow(1.0 - coneLocalT, 3.1) +
+                0.40 * Math.pow(1.0 - coneLocalT, 1.25);
+            double ribStrength = (ribs * 0.075 + (broken - 0.5) * 0.07) * coneBlend;
             double coneHeight =
                 islandShelf +
-                VOLCANO_CONE_HEIGHT * cone * (0.91 + ribStrength);
+                VOLCANO_CONE_HEIGHT * cone * (0.94 + ribStrength);
             double volcanicH = Mth.lerp(coneBlend, islandShelf, coneHeight);
+
+            double craterTEarly = Math.sqrt(localX * localX + localZ * localZ) /
+                bestRadius;
+
+            // Барранкосы — радиальные эрозионные овраги, прорезанные дождями и
+            // пирокластикой. Начинаются чуть ниже кромки и постепенно затухают
+            // к подножию, придавая склону характерную «рёберную» текстуру.
+            if (craterTEarly > VOLCANO_RIM_OUTER_RADIUS + 0.03 && t < coneEdge) {
+                double gullyMask = 0.0;
+                for (int gully = 0; gully < VOLCANO_GULLY_COUNT; gully++) {
+                    double gullyAngle =
+                        hsh(bestCx * 331 + gully * 43, bestCz * 337 - gully * 47) *
+                        Math.PI * 2.0;
+                    double gullyMeander =
+                        Math.sin(craterTEarly * 14.0 + gully * 1.9) * 0.055;
+                    double gDelta = Math.abs(Math.atan2(
+                        Math.sin(angle - gullyAngle - gullyMeander),
+                        Math.cos(angle - gullyAngle - gullyMeander)
+                    ));
+                    double gWidth =
+                        0.045 +
+                        hsh(bestCx * 347 + gully, bestCz * 349 - gully) * 0.035;
+                    double gCut = 1.0 - Mth.clamp(gDelta / gWidth, 0.0, 1.0);
+                    gullyMask = Math.max(gullyMask, gCut * gCut);
+                }
+                // Овраг глубже на крутой средней части склона и сходит на нет
+                // и у кромки, и у берега.
+                double slopeBand = Mth.clamp((t - 0.16) / 0.14, 0.0, 1.0) *
+                    Mth.clamp((coneEdge - t) / 0.20, 0.0, 1.0);
+                volcanicH -= gullyMask * VOLCANO_GULLY_DEPTH * slopeBand *
+                    (0.7 + broken * 0.6);
+            }
+
+            // Паразитические конусы: маленькие боковые кратеры на середине
+            // склона, как у Этны. Гауссовы бугры с собственной мини-воронкой.
+            for (int pc = 0; pc < VOLCANO_PARASITIC_CONES; pc++) {
+                double pcAngle =
+                    hsh(bestCx * 401 + pc * 61, bestCz * 409 - pc * 67) *
+                    Math.PI * 2.0;
+                double pcDist = bestRadius *
+                    (0.38 + hsh(bestCx * 419 + pc, bestCz * 421 - pc) * 0.14);
+                double pcX = bestIx + Math.cos(pcAngle) * pcDist;
+                double pcZ = bestIz + Math.sin(pcAngle) * pcDist;
+                double pdx = x - pcX;
+                double pdz = z - pcZ;
+                double pcRadius = bestRadius * 0.085;
+                double pcD = Math.sqrt(pdx * pdx + pdz * pdz) / pcRadius;
+                if (pcD < 1.6) {
+                    double bump = Math.exp(-pcD * pcD * 1.6) *
+                        VOLCANO_PARASITIC_HEIGHT;
+                    // Мини-воронка на вершине бокового конуса (без лавы).
+                    if (pcD < 0.30) {
+                        bump -= (1.0 - pcD / 0.30) * 4.0;
+                    }
+                    volcanicH += bump;
+                }
+            }
 
             // Неглубокие долины существуют в равнине как маршруты, но их амплитуда
             // мала: игрок может идти по земле без постоянных прыжков на 3–5 блоков.
@@ -652,19 +727,30 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
             // Кратер остаётся читаемой чашей; произвольность относится к форме
             // острова и его подножия, а не к лавовому озеру.
-            double craterT = Math.sqrt(localX * localX + localZ * localZ) /
-                bestRadius;
+            double craterT = craterTEarly;
             double rimCenter = VOLCANO_CRATER_RADIUS;
-            double rim = Math.exp(-Math.pow((craterT - rimCenter) / 0.052, 2.0));
-            volcanicH += rim * (12.0 + ribs * 4.0 + broken * 3.0);
+            double rim = Math.exp(-Math.pow((craterT - rimCenter) / 0.060, 2.0));
+            // Асимметричная кромка: у реальных вулканов подветренная сторона
+            // заметно выше из-за накопления тефры. Герметичность гарантирует
+            // sealedCalderaHeight, поэтому асимметрия чисто силуэтная.
+            double windwardAngle =
+                hsh(bestCx * 503, bestCz * 509) * Math.PI * 2.0;
+            double rimAsymmetry =
+                0.8 + 0.45 * (0.5 + 0.5 * Math.cos(angle - windwardAngle));
+            volcanicH += rim * (7.0 + ribs * 2.6 + broken * 1.8) * rimAsymmetry;
 
-            crater = craterT < VOLCANO_CRATER_RADIUS * 0.82;
+            crater = craterT < VOLCANO_LAVA_RADIUS;
             if (crater) {
-                double inner = craterT / (VOLCANO_CRATER_RADIUS * 0.82);
+                double inner = craterT / VOLCANO_LAVA_RADIUS;
                 double innerRough = fbm(x * 0.045 + 901.0, z * 0.045 - 607.0, 3, 2.0, 0.5);
                 // Дно чаши всегда ниже озера, а внутренняя стенка входит прямо в лаву.
                 volcanicH = VOLCANO_LAVA_ABOVE_SEA - 8.0 + inner * inner * 7.0 + innerRough;
             }
+
+            // В отличие от декоративных пиков, этот пояс существует в каждой колонке
+            // полного круга. Поэтому даже минимум шума не может открыть лаве проход.
+            volcanicH = sealedCalderaHeight(craterT, volcanicH);
+
             // Не сохраняем исходный круглый grid-остров под вулканом: вся суша,
             // включая пляж и травяное подножие, следует organicT.
             h = volcanicH;
@@ -680,6 +766,42 @@ public class OceanChunkGenerator extends ChunkGenerator {
             out[6] = bestIz;
             out[7] = volcano ? seaLevel + VOLCANO_LAVA_ABOVE_SEA : 0.0;
         }
+    }
+
+    /**
+     * Сплошной пояс между лавовым озером и внешним склоном. В этой зоне шум может
+     * только поднять рельеф: опустить его ниже безопасной высоты нельзя.
+     */
+    private boolean isCalderaBarrier(double craterT) {
+        return craterT >= VOLCANO_LAVA_RADIUS &&
+            craterT <= VOLCANO_RIM_OUTER_RADIUS;
+    }
+
+    private double sealedCalderaHeight(double craterT, double currentHeight) {
+        if (!isCalderaBarrier(craterT)) return currentHeight;
+
+        double middle = (VOLCANO_LAVA_RADIUS + VOLCANO_RIM_OUTER_RADIUS) * 0.5;
+        double halfWidth = (VOLCANO_RIM_OUTER_RADIUS - VOLCANO_LAVA_RADIUS) * 0.5;
+        double crown = 1.0 - Math.abs(craterT - middle) / Math.max(0.001, halfWidth);
+        crown = Mth.clamp(crown, 0.0, 1.0);
+        // Внутренний край начинается всего на четыре блока выше лавы. К внешнему
+        // краю пояс плавно подхватывает естественный склон. Это сохраняет герметичность,
+        // но не позволяет высокой центральной части конуса превратиться в цилиндр.
+        double guaranteedHeight =
+            VOLCANO_LAVA_ABOVE_SEA +
+            VOLCANO_RIM_CLEARANCE +
+            crown * 5.0;
+        double outward = Mth.clamp(
+            (craterT - VOLCANO_LAVA_RADIUS) /
+                (VOLCANO_RIM_OUTER_RADIUS - VOLCANO_LAVA_RADIUS),
+            0.0,
+            1.0
+        );
+        outward = outward * outward * (3.0 - 2.0 * outward);
+        return Math.max(
+            guaranteedHeight,
+            Mth.lerp(outward, guaranteedHeight, currentHeight)
+        );
     }
 
     private double gridIslandH(int x, int z) {
@@ -1046,7 +1168,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
     };
 
     /**
-     * Пляж = близость к реальной воде. Сканируем 8 направлений: е  ли в пре  елах
+     * Пляж = близ��сть к реальной воде. Сканируем 8 направлений: е  ли в пре  елах
      * beachWidth есть колонка с fl < seaLevel — это пляж. Колонка у самой кромки
      * всегда находит воду на расстоянии 1, поэтому песок гар��нтированно доходит
      * до океана без разрывов. Высота используется только чтобы убрать песок
@@ -1221,71 +1343,139 @@ public class OceanChunkGenerator extends ChunkGenerator {
         return result;
     }
 
-    /** Поверхность живого вулканического биома: не кольца, а шумовые природные пятна. */
+    /**
+     * Угловое расстояние до ближайшего широкого лавового языка. Поле зависит только
+     * от мировых координат и центра конкретного вулкана, поэтому бесшовно между чанками.
+     * result[0] — расстояние, result[1] — индекс ближайшего потока.
+     */
+    private void volcanicFlowField(
+        int x,
+        int z,
+        double islandT,
+        double centerX,
+        double centerZ,
+        long volcanoHash,
+        double[] result
+    ) {
+        double angle = Math.atan2(z - centerZ, x - centerX);
+        double nearest = Math.PI;
+        int nearestIndex = -1;
+        for (int flow = 0; flow < 5; flow++) {
+            double baseAngle = frac(volcanoHash >> (flow * 11 + 3)) * Math.PI * 2.0 - Math.PI;
+            double phase = frac(volcanoHash >> (flow * 9 + 7)) * Math.PI * 2.0;
+            double meander =
+                Math.sin(islandT * 15.0 + phase) * 0.040 +
+                Math.sin(islandT * 31.0 - phase * 0.7) * 0.016;
+            double delta = Math.abs(Math.atan2(
+                Math.sin(angle - baseAngle - meander),
+                Math.cos(angle - baseAngle - meander)
+            ));
+            if (delta < nearest) {
+                nearest = delta;
+                nearestIndex = flow;
+            }
+        }
+        result[0] = nearest;
+        result[1] = nearestIndex;
+    }
+
+    /**
+     * Цельная гавайская палитра с высотной зональностью, как на реальном
+     * вулканическом острове: чёрный пляж → зелёное живое подножие → пепловые
+     * поля из туфа → тёмный базальтовый конус → раскалённая кальдера.
+     * Сквозь все пояса к океану прорезаются застывшие чёрные лавовые потоки.
+     */
     private BlockState volcanicBiomeSurface(
         int x,
         int z,
         int floor,
         double islandT,
         boolean crater,
-        int lavaLevel
+        int lavaLevel,
+        double centerX,
+        double centerZ
     ) {
-        double moisture = fbm(x * 0.018 + 1703.0, z * 0.018 - 1201.0, 4, 2.0, 0.52);
-        double patches = fbm(x * 0.041 - 431.0, z * 0.041 + 887.0, 3, 2.0, 0.5);
-        double heat = ridgeNoise(x * 0.032 + 211.0, z * 0.032 - 719.0, 3, 2.0, 0.52);
-        double rock = hsh(x * 43 + floor, z * 47 - floor);
+        double broad = fbm(x * 0.012 + 503.0, z * 0.012 - 277.0, 3, 2.0, 0.52);
+        double grain = hsh(x * 43 + floor * 7, z * 47 - floor * 11);
+        long volcanoHash = rawHash((int) centerX * 17, (int) centerZ * 19);
+        double[] flow = new double[2];
+        volcanicFlowField(x, z, islandT, centerX, centerZ, volcanoHash, flow);
 
-        double coastNoise = fbm(x * 0.012 + 503.0, z * 0.012 - 277.0, 3, 2.0, 0.52);
-        // Центральный параметр отделяет самостоятельную равнину от предгорья.
-        // Шум ломает границу, чтобы она не читалась идеальным ко��ьцом.
-        double coneBoundary = 0.53 + (coastNoise - 0.5) * 0.10 + (moisture - 0.5) * 0.05;
-        double greenLimit = 0.64 + (moisture - 0.5) * 0.16 + (coastNoise - 0.5) * 0.13;
-        double beachEdge = 0.86 + (coastNoise - 0.5) * 0.08;
+        double flowWidth = 0.040 + Mth.clamp((islandT - 0.20) / 0.70, 0.0, 1.0) * 0.070;
+        double flowEdge = flow[0] / flowWidth;
+        boolean frozenFlow = islandT > 0.21 && islandT < 0.97 && flowEdge < 1.0;
+        double beachEdge = 0.91 + (broad - 0.5) * 0.045;
+
         if (islandT > beachEdge || floor <= seaLevel + 2) {
-            // Полноценный неровный берег шириной в несколько блоков: песчаные бухты,
-            // гравийные участки и редкие чёрные вулканические выходы.
-            if (patches > 0.72 && rock < 0.42) {
-                return Blocks.BLACKSTONE.defaultBlockState();
-            }
-            if (coastNoise > 0.56 && rock > 0.34) {
-                return Blocks.SAND.defaultBlockState();
-            }
-            return rock < 0.74
-                ? Blocks.GRAVEL.defaultBlockState()
-                : Blocks.SAND.defaultBlockState();
+            // Чёрный вулканический пляж: тёмный «песок» из гравия с выходами
+            // базальта, как на побережьях Исландии и Гавайев.
+            if (grain < 0.66) return Blocks.GRAVEL.defaultBlockState();
+            return grain < 0.86
+                ? Blocks.BASALT.defaultBlockState()
+                : Blocks.BLACKSTONE.defaultBlockState();
         }
-        if (islandT > greenLimit) {
-            // Крупные спокойные пятна, а не ковёр из десятка материалов.
-            if (moisture > 0.66 && patches > 0.57) return Blocks.MOSS_BLOCK.defaultBlockState();
-            if (patches < 0.18) return Blocks.PODZOL.defaultBlockState();
-            return Blocks.GRASS_BLOCK.defaultBlockState();
-        }
-        if (islandT > coneBoundary) {
-            // Большая проходимая равнина: зелень собрана крупными полями, между
-            // которыми остаются каменные овраги и чистые маршруты.
-            if (patches > 0.70 && islandT < greenLimit) {
-                return Blocks.ANDESITE.defaultBlockState();
-            }
-            if (patches < 0.18) return Blocks.PODZOL.defaultBlockState();
-            return moisture > 0.62 && patches > 0.56
-                ? Blocks.MOSS_BLOCK.defaultBlockState()
-                : Blocks.GRASS_BLOCK.defaultBlockState();
-        }
-        if (islandT > coneBoundary - 0.13) {
-            // Широкое каменистое предгорье между равниной и конусом.
-            if (patches > 0.64) return Blocks.COARSE_DIRT.defaultBlockState();
-            return rock < 0.54
-                ? Blocks.ANDESITE.defaultBlockState()
-                : Blocks.TUFF.defaultBlockState();
-        }
-        if (crater && floor <= lavaLevel + 1 && rock < 0.20) {
+
+        if (crater && floor <= lavaLevel + 1 && grain < 0.16) {
             return Blocks.MAGMA_BLOCK.defaultBlockState();
         }
-        if (heat > 0.88 && rock < 0.28) return Blocks.MAGMA_BLOCK.defaultBlockState();
-        if (patches > 0.74) return Blocks.BLACKSTONE.defaultBlockState();
-        if (patches < 0.24) return Blocks.TUFF.defaultBlockState();
-        return rock < 0.38
-            ? Blocks.SMOOTH_BASALT.defaultBlockState()
+
+        if (frozenFlow) {
+            // Внутри каждого языка блоки перемешаны мелко, но края потока остаются ясными.
+            double flowMix = grain + (broad - 0.5) * 0.24;
+            if (flowEdge < 0.34 && flowMix < 0.58) {
+                return Blocks.SMOOTH_BASALT.defaultBlockState();
+            }
+            return flowMix < 0.52
+                ? Blocks.BASALT.defaultBlockState()
+                : Blocks.BLACKSTONE.defaultBlockState();
+        }
+
+        // Зелёный пояс подножия: густая растительная кайма, через которую
+        // потоки лавы читаются как чёрные шрамы. Именно этот контраст делает
+        // остров «живым» — как молодые склоны Килауэа.
+        double greenEdge = 0.665 + (broad - 0.5) * 0.06;
+        if (islandT > greenEdge) {
+            double soil = grain + (broad - 0.5) * 0.20;
+            if (soil < 0.80) return Blocks.GRASS_BLOCK.defaultBlockState();
+            return soil < 0.92
+                ? Blocks.COARSE_DIRT.defaultBlockState()
+                : Blocks.BLACKSTONE.defaultBlockState();
+        }
+
+        // Пепловые поля средней части склона: туф (спрессованный вулканический
+        // пепел) с пятнами гравия-шлака и выходами базальта.
+        double ashEdge = 0.36 + (broad - 0.5) * 0.05;
+        if (islandT > ashEdge) {
+            double ashBlend = Mth.clamp(
+                (islandT - ashEdge) / Math.max(0.01, greenEdge - ashEdge),
+                0.0,
+                1.0
+            );
+            double ashMix = grain + (broad - 0.5) * 0.26;
+            // Чем ближе к зелёному поясу, тем больше пепла и шлака; чем выше,
+            // тем чаще пробивается голый тёмный камень.
+            if (ashMix < 0.30 + ashBlend * 0.28) {
+                return Blocks.TUFF.defaultBlockState();
+            }
+            if (ashMix < 0.46 + ashBlend * 0.28) {
+                return Blocks.GRAVEL.defaultBlockState();
+            }
+            return ashMix < 0.78
+                ? Blocks.BASALT.defaultBlockState()
+                : Blocks.BLACKSTONE.defaultBlockState();
+        }
+
+        // Верхний конус: тёмная спёкшаяся порода. Blackstone и basalt
+        // смешиваются на масштабе блоков, у самой кальдеры больше гладкого
+        // базальта — свежие остывшие излияния.
+        double slopeMix = grain + (broad - 0.5) * 0.30;
+        double summitness = Mth.clamp(1.0 - islandT / Math.max(0.01, ashEdge), 0.0, 1.0);
+        if (slopeMix < 0.14 + summitness * 0.18) {
+            return Blocks.SMOOTH_BASALT.defaultBlockState();
+        }
+        double blackstoneChance = 0.56 + summitness * 0.10;
+        return slopeMix < blackstoneChance
+            ? Blocks.BLACKSTONE.defaultBlockState()
             : Blocks.BASALT.defaultBlockState();
     }
 
@@ -1383,6 +1573,8 @@ public class OceanChunkGenerator extends ChunkGenerator {
         double[][] grids = new double[18][18];
         double[][] gridDi = new double[18][18];
         double[][] gridRi = new double[18][18];
+        double[][] volcanoCenterX = new double[18][18];
+        double[][] volcanoCenterZ = new double[18][18];
         boolean[][] volcanoes = new boolean[18][18];
         boolean[][] craters = new boolean[18][18];
         int[][] lavaLevels = new int[18][18];
@@ -1408,6 +1600,8 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 grids[lx + 1][lz + 1] = gridH;
                 gridDi[lx + 1][lz + 1] = gridD;
                 gridRi[lx + 1][lz + 1] = gridR;
+                volcanoCenterX[lx + 1][lz + 1] = grid[5];
+                volcanoCenterZ[lx + 1][lz + 1] = grid[6];
                 volcanoes[lx + 1][lz + 1] = grid[3] > 0.5;
                 craters[lx + 1][lz + 1] = grid[4] > 0.5;
                 lavaLevels[lx + 1][lz + 1] = (int) Math.round(grid[7]);
@@ -1467,8 +1661,21 @@ public class OceanChunkGenerator extends ChunkGenerator {
                         fl < heights[lx + 1][lz + 2];
 
                     boolean onIsland = spRaw > 0 || gridHi > 0.5;
+                    // Глубина вулканической «кожи» адаптивна к крутизне: на
+                    // обрывах (стенки кратера, кромка, овраги) соседняя колонна
+                    // может быть на 10+ блоков ниже, и без этого наружу вылезала
+                    // бы серая полоса голого камня посреди чёрного склона.
+                    int minNeighbor = Math.min(
+                        Math.min(heights[lx][lz + 1], heights[lx + 2][lz + 1]),
+                        Math.min(heights[lx + 1][lz], heights[lx + 1][lz + 2])
+                    );
+                    int cliffDrop = Math.max(0, fl - minNeighbor);
                     int dirtLayers;
-                    if (volcano) dirtLayers = gridDist > 0.70 ? 3 : 2;
+                    if (volcano) {
+                        dirtLayers = gridDist > 0.70
+                            ? Math.max(3, Math.min(cliffDrop + 2, 8))
+                            : Math.max(3, Math.min(cliffDrop + 2, 24));
+                    }
                     else if (fl >= seaLevel && onIsland) dirtLayers = 3;
                     else if (st < maxT) dirtLayers = 2;
                     else dirtLayers = 0;
@@ -1485,46 +1692,56 @@ public class OceanChunkGenerator extends ChunkGenerator {
                         STONE_S
                     );
 
-                    BlockState volcanicDecoration = STONE_S;
-                    if (volcano && gridDist <= 0.70) {
-                        double layerRock = hsh(wx * 43 + fl, wz * 47 - fl);
-                        double layerFissure = ridgeNoise(
-                            wx * 0.055 + 811.0,
-                            wz * 0.055 - 419.0,
-                            2,
-                            2.0,
-                            0.5
-                        );
-                        if (crater && fl <= lavaLevel + 1 && layerRock < 0.18) {
-                            volcanicDecoration = Blocks.MAGMA_BLOCK.defaultBlockState();
-                        } else if (layerFissure > 0.91 && layerRock < 0.22) {
-                            volcanicDecoration = Blocks.MAGMA_BLOCK.defaultBlockState();
-                        } else if (layerRock < 0.16) {
-                            volcanicDecoration = Blocks.BLACKSTONE.defaultBlockState();
-                        } else if (layerRock < 0.34) {
-                            volcanicDecoration = Blocks.SMOOTH_BASALT.defaultBlockState();
-                        } else if (gridDist > 0.58 && layerRock < 0.62) {
-                            volcanicDecoration = Blocks.TUFF.defaultBlockState();
-                        } else {
-                            volcanicDecoration = Blocks.BASALT.defaultBlockState();
-                        }
-                    }
-
                     if (dirtLayers > 0) {
                         if (volcano && gridDist <= 0.70) {
+                            // Каждый блок кожи получает свою породу по своему Y:
+                            // стенки обрывов выглядят как настоящий слоёный
+                            // стратовулкан, а не как вертикальная копия поверхности.
+                            double layerFissure = ridgeNoise(
+                                wx * 0.055 + 811.0,
+                                wz * 0.055 - 419.0,
+                                2,
+                                2.0,
+                                0.5
+                            );
+                            int strataShift = (int) (hsh(wx >> 4, wz >> 4) * 5);
                             for (int depth = 1; depth <= dirtLayers; depth++) {
-                                double mix = hsh(
-                                    wx * 167 + depth * 13,
-                                    wz * 173 - depth * 17
-                                );
-                                BlockState transition = depth <= 2 && mix < (depth == 1 ? 0.68 : 0.34)
-                                    ? volcanicDecoration
-                                    : STONE_S;
-                                setDirect(chunk, lx, fl - depth, lz, transition);
+                                int by = fl - depth;
+                                double layerRock = hsh(wx * 43 + by, wz * 47 - by);
+                                // Стратовулкан — слоёный пирог: горизонтальные
+                                // прослойки спрессованного пепла (туфа)
+                                // чередуются с базальтом.
+                                boolean ashStrata = ((by + strataShift) % 6 + 6) % 6 < 2;
+                                BlockState skin;
+                                if (crater && by <= lavaLevel + 1 && layerRock < 0.18) {
+                                    skin = Blocks.MAGMA_BLOCK.defaultBlockState();
+                                } else if (crater && by <= lavaLevel && layerRock < 0.30) {
+                                    // Обсидиановые жилы у самой лавы: расплав,
+                                    // закалённый о холодную стенку жерла.
+                                    skin = Blocks.OBSIDIAN.defaultBlockState();
+                                } else if (layerFissure > 0.91 && layerRock < 0.22) {
+                                    skin = Blocks.MAGMA_BLOCK.defaultBlockState();
+                                } else if (layerRock < 0.16) {
+                                    skin = Blocks.BLACKSTONE.defaultBlockState();
+                                } else if (ashStrata && layerRock < 0.52) {
+                                    skin = Blocks.TUFF.defaultBlockState();
+                                } else if (layerRock < 0.34) {
+                                    skin = Blocks.SMOOTH_BASALT.defaultBlockState();
+                                } else if (gridDist > 0.58 && layerRock < 0.62) {
+                                    skin = Blocks.BLACKSTONE.defaultBlockState();
+                                } else {
+                                    skin = Blocks.BASALT.defaultBlockState();
+                                }
+                                setDirect(chunk, lx, by, lz, skin);
                             }
                         } else {
+                            // На внешнем зелёном поясе вулкана под травой лежи��
+                            // тонкий плодородный слой на вулканическом базальте —
+                            // молодая почва, наросшая на застывшей лаве.
                             BlockState sub = volcano
-                                ? Blocks.DIRT.defaultBlockState()
+                                ? (hsh(wx * 181, wz * 191) < 0.72
+                                    ? Blocks.DIRT.defaultBlockState()
+                                    : Blocks.BASALT.defaultBlockState())
                                 : subSurf(
                                     wx,
                                     wz,
@@ -1553,7 +1770,9 @@ public class OceanChunkGenerator extends ChunkGenerator {
                             fl,
                             gridDist,
                             crater,
-                            lavaLevel
+                            lavaLevel,
+                            volcanoCenterX[lx + 1][lz + 1],
+                            volcanoCenterZ[lx + 1][lz + 1]
                         );
                     } else {
                         surf = pickSurf(
@@ -1946,15 +2165,15 @@ public class OceanChunkGenerator extends ChunkGenerator {
                     continue;
                 }
 
-                // Рощи имеют плотное ядро, мягкий край и крупные пустые поляны.
-                boolean inGrove = grove > 0.62 && groveEdge > 0.38;
+                // Небольшие рощи только на самом внешнем зелёном обрамлении.
+                boolean inGrove = grove > 0.68 && groveEdge > 0.46;
                 if (
-                    t > 0.64 &&
-                    t < 0.87 &&
+                    t > 0.73 &&
+                    t < 0.86 &&
                     inGrove &&
                     stable &&
-                    pick < 0.0022 &&
-                    (ground.is(Blocks.GRASS_BLOCK) || ground.is(Blocks.MOSS_BLOCK) || ground.is(Blocks.PODZOL))
+                    pick < 0.0014 &&
+                    ground.is(Blocks.GRASS_BLOCK)
                 ) {
                     AcaciaGenerator.tryPlace(
                         level,
@@ -1970,35 +2189,37 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 pos.set(x, floor + 1, z);
                 if (!level.getBlockState(pos).isAir()) continue;
 
-                // Мелкий декор существует только внутри рощ, без цветочного конфетти.
+                // Живой зелёный пояс: трава с папоротниками и редкими цветами.
+                // На чёрных потоках декора нет — контраст остаётся резким.
                 if (
-                    inGrove &&
-                    (ground.is(Blocks.GRASS_BLOCK) || ground.is(Blocks.MOSS_BLOCK)) &&
-                    pick < 0.075
+                    t > 0.64 &&
+                    t < 0.94 &&
+                    ground.is(Blocks.GRASS_BLOCK) &&
+                    pick < 0.16
                 ) {
-                    level.setBlock(
-                        pos,
-                        pick < 0.018
-                            ? Blocks.FERN.defaultBlockState()
-                            : Blocks.SHORT_GRASS.defaultBlockState(),
-                        2
-                    );
-                } else if (
-                    t > 0.50 &&
-                    t < 0.64 &&
-                    (ground.is(Blocks.TUFF) || ground.is(Blocks.ANDESITE)) &&
-                    pick > 0.9975
-                ) {
-                    // Редкий широкий каменный ориентир вместо частокола тонких шипов.
-                    for (int dx = -1; dx <= 1; dx++) {
-                        for (int dz = -1; dz <= 1; dz++) {
-                            if (Math.abs(dx) + Math.abs(dz) > 1) continue;
-                            pos.set(x + dx, floor + 1, z + dz);
-                            if (level.getBlockState(pos).isAir()) {
-                                level.setBlock(pos, Blocks.ANDESITE.defaultBlockState(), 2);
-                            }
-                        }
+                    double plant = hsh(x * 269, z * 271);
+                    BlockState deco;
+                    if (plant < 0.62) {
+                        deco = Blocks.SHORT_GRASS.defaultBlockState();
+                    } else if (plant < 0.90) {
+                        deco = Blocks.FERN.defaultBlockState();
+                    } else if (plant < 0.96) {
+                        deco = Blocks.POPPY.defaultBlockState();
+                    } else {
+                        deco = Blocks.OXEYE_DAISY.defaultBlockState();
                     }
+                    level.setBlock(pos, deco, 2);
+                    continue;
+                }
+
+                // Сухие кусты на пятнах утоптанной земли — переход от зелени
+                // к пепловым полям выглядит естественно выжженным.
+                if (
+                    t > 0.55 &&
+                    ground.is(Blocks.COARSE_DIRT) &&
+                    pick < 0.06
+                ) {
+                    level.setBlock(pos, Blocks.DEAD_BUSH.defaultBlockState(), 2);
                 }
             }
         }
@@ -2022,13 +2243,20 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 if (sample[3] < 0.5) continue;
 
                 double t = sample[0];
+                double craterT = Math.sqrt(
+                    (wx - sample[5]) * (wx - sample[5]) +
+                    (wz - sample[6]) * (wz - sample[6])
+                ) / sample[1];
                 int floor = floorAt(wx, wz);
                 double angle = Math.atan2(wz - sample[6], wx - sample[5]);
                 long volcanoHash = rawHash((int) sample[5] * 17, (int) sample[6] * 19);
                 int lavaLevel = (int) Math.round(sample[7]);
 
-                // Три маленьких обсидиановых выступа в кальдере. Центральный блок каждого
-                // пока служит placeholder для будущей «заскаленной магмы» из сборки.
+                double pick = hsh(wx * 197 + floor, wz * 199 - floor);
+
+                // Три обсидиановых островка-купола в кальдере. Ступенчатый купол
+                // с прожилками плачущего обсидиана; на вершине центрального
+                // выступа — placeholder «раскалённой магмы» (награда для create).
                 boolean rewardIsland = false;
                 for (int island = 0; island < 3; island++) {
                     double islandAngle = frac(volcanoHash >> (island * 15 + 5)) * Math.PI * 2.0;
@@ -2038,98 +2266,162 @@ public class OceanChunkGenerator extends ChunkGenerator {
                     double dx = wx - islandX;
                     double dz = wz - islandZ;
                     double distanceSq = dx * dx + dz * dz;
-                    double platformRadius = island == 0 ? 2.8 : 2.2;
+                    double platformRadius = island == 0 ? 3.2 : 2.4;
                     if (distanceSq <= platformRadius * platformRadius) {
+                        double distance = Math.sqrt(distanceSq);
+                        // Нижний ярус купола едва выступает из лавы.
                         pos.set(wx, lavaLevel + 1, wz);
                         level.setBlock(
                             pos,
-                            distanceSq < 0.55
-                                ? VOLCANO_REWARD_BLOCK
+                            pick < 0.18
+                                ? Blocks.CRYING_OBSIDIAN.defaultBlockState()
                                 : Blocks.OBSIDIAN.defaultBlockState(),
                             2
                         );
+                        // Верхний ярус: маленькая обсидиановая площадка,
+                        // на которой стоит блок награды.
+                        if (distance < platformRadius * 0.48) {
+                            pos.set(wx, lavaLevel + 2, wz);
+                            level.setBlock(
+                                pos,
+                                distanceSq < 0.55
+                                    ? VOLCANO_REWARD_BLOCK
+                                    : (pick < 0.30
+                                        ? Blocks.CRYING_OBSIDIAN.defaultBlockState()
+                                        : Blocks.OBSIDIAN.defaultBlockState()),
+                                2
+                            );
+                        }
                         rewardIsland = true;
                         break;
                     }
                 }
                 if (rewardIsland) continue;
 
-                // Редкая трава оживляет зелёное кольцо, не поднимаясь на горячий склон.
-                if (t > 0.70 && t < 0.90 && hsh(wx * 149, wz * 151) < 0.11) {
+                double[] flowField = new double[2];
+                volcanicFlowField(
+                    wx,
+                    wz,
+                    t,
+                    sample[5],
+                    sample[6],
+                    volcanoHash,
+                    flowField
+                );
+                int nearestFlowIndex = (int) flowField[1];
+                // Активные языки текут от кромки до самого океана, как потоки
+                // Килауэа: раскалённое русло наверху, корка магмы на середине
+                // и полностью остывший чёрный камень у воды.
+                double channelWidth = 0.017 + Mth.clamp((t - 0.24) / 0.40, 0.0, 1.0) * 0.018;
+                boolean activeFlow = nearestFlowIndex == 0 || nearestFlowIndex == 3;
+                boolean inFlow =
+                    activeFlow &&
+                    craterT > VOLCANO_RIM_OUTER_RADIUS + 0.025 &&
+                    !isCalderaBarrier(craterT) &&
+                    t > 0.25 &&
+                    t < 0.985 &&
+                    flowField[0] < channelWidth;
+                if (inFlow) {
                     pos.set(wx, floor, wz);
-                    if (level.getBlockState(pos).is(Blocks.GRASS_BLOCK)) {
+                    double edge = flowField[0] / channelWidth;
+                    BlockState channel;
+                    if (floor <= seaLevel + 1) {
+                        // Вход лавы в океан: магмовые блоки у кромки воды дают
+                        // пар и пузырьковые колонны — «лавовый берег».
+                        channel = edge < 0.6
+                            ? Blocks.MAGMA_BLOCK.defaultBlockState()
+                            : Blocks.BASALT.defaultBlockState();
+                    } else if (edge < 0.34 && t < 0.52) {
+                        channel = Blocks.LAVA.defaultBlockState();
+                    } else if (edge < 0.60 && t < 0.70) {
+                        channel = Blocks.MAGMA_BLOCK.defaultBlockState();
+                    } else if (edge < 0.67) {
+                        channel = Blocks.SMOOTH_BASALT.defaultBlockState();
+                    } else {
+                        channel = Blocks.BLACKSTONE.defaultBlockState();
+                    }
+                    level.setBlock(pos, channel, 2);
+
+                    // Застывшие борта (леве): невысокий валик блэкстоуна вдоль
+                    // краёв активного русла, как у настоящих лавовых каналов.
+                    if (
+                        edge > 0.80 &&
+                        t > 0.30 &&
+                        t < 0.80 &&
+                        floor > seaLevel + 2 &&
+                        pick < 0.55
+                    ) {
                         pos.set(wx, floor + 1, wz);
                         if (level.getBlockState(pos).isAir()) {
                             level.setBlock(
                                 pos,
-                                hsh(wx * 157, wz * 163) < 0.18
-                                    ? Blocks.FERN.defaultBlockState()
-                                    : Blocks.SHORT_GRASS.defaultBlockState(),
+                                Blocks.BLACKSTONE.defaultBlockState(),
                                 2
                             );
                         }
                     }
-                }
-
-                double nearestFlow = Math.PI;
-                for (int flow = 0; flow < 4; flow++) {
-                    double flowAngle = frac(volcanoHash >> (flow * 12)) * Math.PI * 2.0 - Math.PI;
-                    double meander = Math.sin(t * 31.0 + flow * 2.7) * 0.055;
-                    double delta = Math.abs(Math.atan2(
-                        Math.sin(angle - flowAngle - meander),
-                        Math.cos(angle - flowAngle - meander)
-                    ));
-                    nearestFlow = Math.min(nearestFlow, delta);
-                }
-
-                double channelWidth = 0.022 + (1.0 - t) * 0.018;
-                boolean inFlow = t > VOLCANO_CRATER_RADIUS * 0.78 && t < 0.84 && nearestFlow < channelWidth;
-                if (inFlow) {
-                    pos.set(wx, floor, wz);
-                    double edge = nearestFlow / channelWidth;
-                    BlockState channel;
-                    if (edge < 0.42 && t < 0.67) {
-                        channel = Blocks.LAVA.defaultBlockState();
-                    } else if (edge < 0.72) {
-                        channel = Blocks.MAGMA_BLOCK.defaultBlockState();
-                    } else {
-                        channel = hsh(wx * 101, wz * 103) < 0.45
-                            ? Blocks.OBSIDIAN.defaultBlockState()
-                            : Blocks.BLACKSTONE.defaultBlockState();
-                    }
-                    level.setBlock(pos, channel, 2);
                     continue;
                 }
 
-                double feature = hsh(wx * 107 + floor, wz * 109 - floor);
-                if (t > 0.28 && t < 0.72 && feature < 0.0045) {
-                    int height = 3 + (int) (hsh(wx * 113, wz * 127) * 6.0);
-                    for (int y = 1; y <= height; y++) {
-                        int radius = y < height * 0.35 ? 1 : 0;
-                        for (int dx = -radius; dx <= radius; dx++) {
-                            for (int dz = -radius; dz <= radius; dz++) {
-                                if (Math.abs(dx) + Math.abs(dz) > radius + 1) continue;
-                                pos.set(wx + dx, floor + y, wz + dz);
-                                if (level.getBlockState(pos).isAir()) {
-                                    level.setBlock(
-                                        pos,
-                                        y == height && radius == 0
-                                            ? Blocks.BLACKSTONE.defaultBlockState()
-                                            : Blocks.BASALT.defaultBlockState(),
-                                        2
-                                    );
-                                }
+                // Фумаролы: геотермальные жерла сразу за внешней кромкой.
+                // Пятно магмы и иногда невысокая базальтовая «труба» рядом.
+                if (
+                    craterT > VOLCANO_RIM_OUTER_RADIUS + 0.02 &&
+                    craterT < VOLCANO_RIM_OUTER_RADIUS + 0.12 &&
+                    floor > seaLevel + 4 &&
+                    pick < 0.012
+                ) {
+                    pos.set(wx, floor, wz);
+                    level.setBlock(pos, Blocks.MAGMA_BLOCK.defaultBlockState(), 2);
+                    if (pick < 0.004) {
+                        int chimney = 2 + (int) (hsh(wx * 233, wz * 239) * 2);
+                        for (int dy = 1; dy <= chimney; dy++) {
+                            pos.set(wx + 1, floor + dy, wz);
+                            if (level.getBlockState(pos).isAir()) {
+                                level.setBlock(
+                                    pos,
+                                    Blocks.BASALT.defaultBlockState(),
+                                    2
+                                );
                             }
                         }
                     }
-                } else if (t > 0.34 && t < 0.62 && feature > 0.9965) {
-                    pos.set(wx, floor, wz);
-                    level.setBlock(pos, Blocks.MAGMA_BLOCK.defaultBlockState(), 2);
+                    continue;
+                }
+
+                // Вулканические бомбы: одиночные глыбы, выброшенные извержением
+                // и застрявшие в пепловых полях средней части склона.
+                if (
+                    t > 0.36 &&
+                    t < 0.66 &&
+                    floor > seaLevel + 3 &&
+                    pick < 0.0035
+                ) {
                     pos.set(wx, floor + 1, wz);
                     if (level.getBlockState(pos).isAir()) {
-                        level.setBlock(pos, Blocks.FIRE.defaultBlockState(), 2);
+                        level.setBlock(
+                            pos,
+                            hsh(wx * 241, wz * 251) < 0.5
+                                ? Blocks.BLACKSTONE.defaultBlockState()
+                                : Blocks.SMOOTH_BASALT.defaultBlockState(),
+                            2
+                        );
+                        if (hsh(wx * 257, wz * 263) < 0.3) {
+                            pos.set(wx, floor + 2, wz);
+                            if (level.getBlockState(pos).isAir()) {
+                                level.setBlock(
+                                    pos,
+                                    Blocks.BLACKSTONE.defaultBlockState(),
+                                    2
+                                );
+                            }
+                        }
                     }
+                    continue;
                 }
+
+                // Отдельны�� шпили и случайный огонь здесь намеренно не создаются:
+                // силуэт формируют сам широкий конус и большие потоки.
             }
         }
     }
@@ -2367,7 +2659,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
         double usableR = radius * (1.0 - BOULDER_EDGE_MARGIN);
 
         // Важный момент: count означает число РЕАЛЬНЫХ валидных камней, а не число
-        // сырых кандидатов. Невалидные позиции заменяются следующей попыткой.
+        // сырых кандидатов. Невалидные позиции заменяются следующей попытко��.
         int[] acceptedX = new int[BOULDER_MAX_COUNT];
         int[] acceptedZ = new int[BOULDER_MAX_COUNT];
         double[] acceptedR = new double[BOULDER_MAX_COUNT];
@@ -2753,7 +3045,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                     } else if (rock < 0.34) {
                         decoration = Blocks.SMOOTH_BASALT.defaultBlockState();
                     } else if (gridDi > 0.58 && rock < 0.62) {
-                        decoration = Blocks.TUFF.defaultBlockState();
+                        decoration = Blocks.BLACKSTONE.defaultBlockState();
                     } else {
                         decoration = Blocks.BASALT.defaultBlockState();
                     }
@@ -2763,7 +3055,9 @@ public class OceanChunkGenerator extends ChunkGenerator {
                         : Blocks.STONE.defaultBlockState();
                 } else {
                     sub = volcano
-                        ? Blocks.DIRT.defaultBlockState()
+                        ? (hsh(x * 181, z * 191) < 0.52
+                            ? Blocks.BLACKSTONE.defaultBlockState()
+                            : Blocks.BASALT.defaultBlockState())
                         : subSurf(x, z, fl, st, spRaw, gridHi, beach);
                 }
                 col[y - minY] =
@@ -2776,7 +3070,9 @@ public class OceanChunkGenerator extends ChunkGenerator {
                         fl,
                         gridDi,
                         crater,
-                        lavaLevel
+                        lavaLevel,
+                        grid[5],
+                        grid[6]
                     );
                 } else {
                     col[y - minY] = pickSurf(x, z, fl, st, gridHi, gridDi, beach);
