@@ -8,11 +8,12 @@ import com.mojang.serialization.MapCodec;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
+import com.jokerdayn.swworldgencore.OceanGeneratorDiagnostics;
+import com.mojang.brigadier.arguments.BoolArgumentType;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.LongAdder;
+import java.util.concurrent.atomic.AtomicBoolean;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.core.BlockPos;
@@ -54,9 +55,10 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
     private static final Logger log = LoggerFactory.getLogger("SWWorldgenCore");
 
-    private final LongAdder chunkCount = new LongAdder();
-    private final LongAdder totalGenTimeNs = new LongAdder();
-    private final AtomicLong lastLogTime = new AtomicLong(0);
+    private final OceanGeneratorDiagnostics diagnostics =
+        new OceanGeneratorDiagnostics();
+    private final AtomicBoolean spawnDebugLogged =
+        new AtomicBoolean();
 
     private static final int BASE_FLOOR = 25;
     private static final int VOLCANO_COMMAND_SEARCH_RADIUS = 64;
@@ -167,10 +169,16 @@ public class OceanChunkGenerator extends ChunkGenerator {
         synchronized (this) {
             if (seed != 0) return;
             seedOffsets = createSeedOffsets(worldSeed);
+            diagnostics.seedReset();
+            diagnostics.cacheTrim(OceanGeneratorDiagnostics.Cache.BIOME, BIOME_CACHE.size());
+            diagnostics.cacheTrim(OceanGeneratorDiagnostics.Cache.FLOOR, FLOOR_CACHE.size());
+            diagnostics.cacheTrim(OceanGeneratorDiagnostics.Cache.BEACH, BEACH_CACHE.size());
+            diagnostics.cacheTrim(OceanGeneratorDiagnostics.Cache.DECOR, DECOR_CACHE.size());
             BIOME_CACHE.clear();
             FLOOR_CACHE.clear();
             BEACH_CACHE.clear();
             DECOR_CACHE.clear();
+            updateDiagnosticCacheSizes();
             // volatile seed публикуется последним: читатель нового seed уже видит offsets.
             seed = worldSeed;
         }
@@ -190,10 +198,16 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
     private void buildSeedOffsets() {
         seedOffsets = createSeedOffsets(seed);
+        diagnostics.seedReset();
+        diagnostics.cacheTrim(OceanGeneratorDiagnostics.Cache.BIOME, BIOME_CACHE.size());
+        diagnostics.cacheTrim(OceanGeneratorDiagnostics.Cache.FLOOR, FLOOR_CACHE.size());
+        diagnostics.cacheTrim(OceanGeneratorDiagnostics.Cache.BEACH, BEACH_CACHE.size());
+        diagnostics.cacheTrim(OceanGeneratorDiagnostics.Cache.DECOR, DECOR_CACHE.size());
         BIOME_CACHE.clear();
         FLOOR_CACHE.clear();
         BEACH_CACHE.clear();
         DECOR_CACHE.clear();
+        updateDiagnosticCacheSizes();
     }
 
     private double seedOff(int salt, double scale) {
@@ -1135,7 +1149,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
     private final ConcurrentHashMap<Long, BiomeCategory> BIOME_CACHE =
         new ConcurrentHashMap<>();
-    private static final int BIOME_CACHE_MAX = 65536;
+    private static final int BIOME_CACHE_MAX = 131072;
 
     private final ConcurrentHashMap<Long, Integer> FLOOR_CACHE =
         new ConcurrentHashMap<>();
@@ -1144,15 +1158,28 @@ public class OceanChunkGenerator extends ChunkGenerator {
         new ConcurrentHashMap<>();
     private static final int BEACH_CACHE_MAX = 131072;
 
-    /** Удаляет небольшую порцию старых записей вместо полной очистки горячего кэша. */
-    private static void trimCache(ConcurrentHashMap<Long, ?> cache, int maxSize) {
-        int overflow = cache.size() - maxSize;
-        if (overflow <= 0) return;
-        int removeCount = Math.min(Math.max(overflow, maxSize >>> 5), 1024);
+    /**
+     * Batch-trim with hysteresis: only trim when above 110% of max,
+     * and trim down to 80% of max. This reduces trim frequency ~5x.
+     */
+    private static int trimCache(ConcurrentHashMap<Long, ?> cache, int maxSize) {
+        int removed = 0;
+        int softMax = (int) (maxSize * 1.1);
+        int target = (int) (maxSize * 0.8);
+        if (cache.size() <= softMax) return removed;
+        int toRemove = Math.max(1, cache.size() - target);
         var iterator = cache.keySet().iterator();
-        while (removeCount-- > 0 && iterator.hasNext()) {
-            cache.remove(iterator.next());
+        while (removed < toRemove && iterator.hasNext()) {
+            if (cache.remove(iterator.next()) != null) removed++;
         }
+        return removed;
+    }
+
+    private void updateDiagnosticCacheSizes() {
+        diagnostics.cacheState(OceanGeneratorDiagnostics.Cache.FLOOR, FLOOR_CACHE.size(), FLOOR_CACHE_MAX);
+        diagnostics.cacheState(OceanGeneratorDiagnostics.Cache.BIOME, BIOME_CACHE.size(), BIOME_CACHE_MAX);
+        diagnostics.cacheState(OceanGeneratorDiagnostics.Cache.BEACH, BEACH_CACHE.size(), BEACH_CACHE_MAX);
+        diagnostics.cacheState(OceanGeneratorDiagnostics.Cache.DECOR, DECOR_CACHE.size(), DECOR_CACHE_MAX);
     }
 
     private static long colKey(int x, int z) {
@@ -1163,12 +1190,15 @@ public class OceanChunkGenerator extends ChunkGenerator {
     private int floorAt(int x, int z) {
         long key = colKey(x, z);
         Integer cached = FLOOR_CACHE.get(key);
+        diagnostics.cacheAccess(OceanGeneratorDiagnostics.Cache.FLOOR, cached != null);
         if (cached != null) return cached;
         double st = islandDist(x, z);
         double spRaw = islandH(x, z, st);
         int fl = computeFloor(x, z, st, spRaw);
         FLOOR_CACHE.put(key, fl);
-        trimCache(FLOOR_CACHE, FLOOR_CACHE_MAX);
+        int removed = trimCache(FLOOR_CACHE, FLOOR_CACHE_MAX);
+        if (removed > 0) diagnostics.cacheTrim(OceanGeneratorDiagnostics.Cache.FLOOR, removed);
+        updateDiagnosticCacheSizes();
         return fl;
     }
 
@@ -1206,6 +1236,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
         if (fl < seaLevel || fl > seaLevel + 5) return false;
         long key = colKey(x, z);
         Boolean cached = BEACH_CACHE.get(key);
+        diagnostics.cacheAccess(OceanGeneratorDiagnostics.Cache.BEACH, cached != null);
         if (cached != null) return cached;
 
         int width = (int) beachWidthAt(x, z);
@@ -1220,7 +1251,9 @@ public class OceanChunkGenerator extends ChunkGenerator {
             }
         }
         BEACH_CACHE.put(key, beach);
-        trimCache(BEACH_CACHE, BEACH_CACHE_MAX);
+        int removed = trimCache(BEACH_CACHE, BEACH_CACHE_MAX);
+        if (removed > 0) diagnostics.cacheTrim(OceanGeneratorDiagnostics.Cache.BEACH, removed);
+        updateDiagnosticCacheSizes();
         return beach;
     }
 
@@ -1317,6 +1350,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
     public BiomeCategory classifyBiome(int x, int z) {
         long key = colKey(x, z);
         BiomeCategory cached = BIOME_CACHE.get(key);
+        diagnostics.cacheAccess(OceanGeneratorDiagnostics.Cache.BIOME, cached != null);
         if (cached != null) return cached;
 
         int fl = floorAt(x, z);
@@ -1340,7 +1374,9 @@ public class OceanChunkGenerator extends ChunkGenerator {
         }
 
         BIOME_CACHE.put(key, result);
-        trimCache(BIOME_CACHE, BIOME_CACHE_MAX);
+        int removed = trimCache(BIOME_CACHE, BIOME_CACHE_MAX);
+        if (removed > 0) diagnostics.cacheTrim(OceanGeneratorDiagnostics.Cache.BIOME, removed);
+        updateDiagnosticCacheSizes();
         return result;
     }
 
@@ -1541,8 +1577,6 @@ public class OceanChunkGenerator extends ChunkGenerator {
         StructureManager structureManager,
         ChunkAccess chunk
     ) {
-        long startTime = System.nanoTime();
-
         if (chunk.getLevel() instanceof WorldGenLevel wgl) syncSeedFromLevel(
             wgl
         );
@@ -1551,7 +1585,15 @@ public class OceanChunkGenerator extends ChunkGenerator {
         int cx = cp.x,
             cz = cp.z;
 
-        if (cx == 0 && cz == 0 && chunkCount.sum() == 0) {
+        OceanGeneratorDiagnostics.Token benchmark = diagnostics.begin(
+            OceanGeneratorDiagnostics.Stage.FILL_NOISE,
+            cp.toLong(),
+            seed
+        );
+        Throwable benchmarkError = null;
+        try {
+
+        if (cx == 0 && cz == 0 && spawnDebugLogged.compareAndSet(false, true)) {
             double st0 = islandDist(0, 0);
             double sp0 = islandH(0, 0, st0);
             double gH0 = gridIslandH(0, 0);
@@ -1622,7 +1664,9 @@ public class OceanChunkGenerator extends ChunkGenerator {
         }
 
         DECOR_CACHE.put(cp.toLong(), colCache);
-        trimCache(DECOR_CACHE, DECOR_CACHE_MAX);
+        int decorRemoved = trimCache(DECOR_CACHE, DECOR_CACHE_MAX);
+        if (decorRemoved > 0) diagnostics.cacheTrim(OceanGeneratorDiagnostics.Cache.DECOR, decorRemoved);
+        updateDiagnosticCacheSizes();
 
         int minY = chunk.getMinBuildHeight();
         int maxWorkY = Math.max(maxFl + 2, seaLevel);
@@ -1863,24 +1907,13 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 .release();
         }
 
-        long elapsed = System.nanoTime() - startTime;
-        chunkCount.increment();
-        totalGenTimeNs.add(elapsed);
-        long now = System.currentTimeMillis();
-        long last = lastLogTime.get();
-        if (now - last > 5000 && lastLogTime.compareAndSet(last, now)) {
-            long cnt = chunkCount.sum();
-            long tot = totalGenTimeNs.sum();
-            double avgUs = tot / 1000.0 / Math.max(cnt, 1);
-            log.info(
-                "[Benchmark] chunks={} avg={}us/chunk total={}s",
-                cnt,
-                String.format("%.1f", avgUs),
-                String.format("%.2f", tot / 1_000_000_000.0)
-            );
-        }
-
         return CompletableFuture.completedFuture(chunk);
+        } catch (RuntimeException | Error error) {
+            benchmarkError = error;
+            throw error;
+        } finally {
+            diagnostics.end(benchmark, seed, benchmarkError);
+        }
     }
 
     @Override
@@ -1936,6 +1969,12 @@ public class OceanChunkGenerator extends ChunkGenerator {
         int cx = cp.x,
             cz = cp.z;
 
+        OceanGeneratorDiagnostics.Token benchmark = diagnostics.begin(
+            OceanGeneratorDiagnostics.Stage.DECORATION, cp.toLong(), seed
+        );
+        Throwable benchmarkError = null;
+        try {
+
         // Живое подножие, геотермальные пятна и вулканический декор контролируются
         // отдельными проходами и не смешиваются с декором саванны.
         generateVolcanicBiomeFeatures(level, cx, cz);
@@ -1947,6 +1986,8 @@ public class OceanChunkGenerator extends ChunkGenerator {
         generateSavannaTrees(level, cx, cz);
 
         ColumnCache cache = DECOR_CACHE.remove(cp.toLong());
+        diagnostics.cacheAccess(OceanGeneratorDiagnostics.Cache.DECOR, cache != null);
+        diagnostics.cacheState(OceanGeneratorDiagnostics.Cache.DECOR, DECOR_CACHE.size(), DECOR_CACHE_MAX);
 
         for (int lx = 0; lx < 16; lx++) {
             for (int lz = 0; lz < 16; lz++) {
@@ -2125,6 +2166,12 @@ public class OceanChunkGenerator extends ChunkGenerator {
                     }
                 }
             }
+        }
+        } catch (RuntimeException | Error error) {
+            benchmarkError = error;
+            throw error;
+        } finally {
+            diagnostics.end(benchmark, seed, benchmarkError);
         }
     }
 
@@ -2985,6 +3032,12 @@ public class OceanChunkGenerator extends ChunkGenerator {
         RandomState random
     ) {
         if (level instanceof WorldGenLevel wgl) syncSeedFromLevel(wgl);
+        long benchmarkKey = ChunkPos.asLong(Math.floorDiv(x, 16), Math.floorDiv(z, 16));
+        OceanGeneratorDiagnostics.Token benchmark = diagnostics.begin(
+            OceanGeneratorDiagnostics.Stage.BASE_HEIGHT, benchmarkKey, seed
+        );
+        Throwable benchmarkError = null;
+        try {
         double st = islandDist(x, z);
         double spRaw = islandH(x, z, st);
         double[] grid = new double[8];
@@ -2999,6 +3052,12 @@ public class OceanChunkGenerator extends ChunkGenerator {
         if (floor < seaLevel) surface = seaLevel;
         if (grid[4] > 0.5) surface = Math.max(surface, (int) Math.round(grid[7]));
         return surface + 1;
+        } catch (RuntimeException | Error error) {
+            benchmarkError = error;
+            throw error;
+        } finally {
+            diagnostics.end(benchmark, seed, benchmarkError);
+        }
     }
 
     @Override
@@ -3009,6 +3068,12 @@ public class OceanChunkGenerator extends ChunkGenerator {
         RandomState random
     ) {
         if (level instanceof WorldGenLevel wgl) syncSeedFromLevel(wgl);
+        long benchmarkKey = ChunkPos.asLong(Math.floorDiv(x, 16), Math.floorDiv(z, 16));
+        OceanGeneratorDiagnostics.Token benchmark = diagnostics.begin(
+            OceanGeneratorDiagnostics.Stage.BASE_COLUMN, benchmarkKey, seed
+        );
+        Throwable benchmarkError = null;
+        try {
         double st = islandDist(x, z);
         double spRaw = islandH(x, z, st);
         double[] grid = new double[8];
@@ -3115,6 +3180,12 @@ public class OceanChunkGenerator extends ChunkGenerator {
             }
         }
         return new NoiseColumn(minY, col);
+        } catch (RuntimeException | Error error) {
+            benchmarkError = error;
+            throw error;
+        } finally {
+            diagnostics.end(benchmark, seed, benchmarkError);
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -3126,7 +3197,27 @@ public class OceanChunkGenerator extends ChunkGenerator {
         CommandDispatcher<CommandSourceStack> dispatcher = event.getDispatcher();
         dispatcher.register(
             Commands.literal("volcano")
+                .requires(source -> source.hasPermission(2))
                 .executes(OceanChunkGenerator::teleportToNearestVolcano)
+        );
+        dispatcher.register(
+            Commands.literal("oceangen")
+                .requires(source -> source.hasPermission(2))
+                .then(Commands.literal("benchmark")
+                    .executes(ctx -> benchmarkStatus(ctx.getSource()))
+                    .then(Commands.literal("status").executes(ctx -> benchmarkStatus(ctx.getSource())))
+                    .then(Commands.literal("report").executes(ctx -> benchmarkReport(ctx.getSource())))
+                    .then(Commands.literal("threads").executes(ctx -> benchmarkThreads(ctx.getSource())))
+                    .then(Commands.literal("slow").executes(ctx -> benchmarkSlow(ctx.getSource())))
+                    .then(Commands.literal("reset").executes(ctx -> benchmarkReset(ctx.getSource())))
+                    .then(Commands.literal("export").executes(ctx -> benchmarkExport(ctx.getSource())))
+                    .then(Commands.literal("verbose")
+                        .then(Commands.argument("enabled", BoolArgumentType.bool())
+                            .executes(ctx -> benchmarkVerbose(
+                                ctx.getSource(), BoolArgumentType.getBool(ctx, "enabled")
+                            )))
+                    )
+                )
         );
     }
 
@@ -3134,12 +3225,6 @@ public class OceanChunkGenerator extends ChunkGenerator {
         CommandContext<CommandSourceStack> context
     ) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
         CommandSourceStack source = context.getSource();
-        if (!source.hasPermission(2)) {
-            source.sendFailure(Component.literal(
-                "Для команды /volcano необходим уровень прав оператора 2."
-            ));
-            return 0;
-        }
         ServerPlayer player = source.getPlayerOrException();
         ServerLevel level = player.serverLevel();
 
@@ -3192,6 +3277,87 @@ public class OceanChunkGenerator extends ChunkGenerator {
             ),
             true
         );
+        return 1;
+    }
+
+    private static OceanChunkGenerator benchmarkGenerator(CommandSourceStack source) {
+        ServerLevel level = source.getLevel();
+        if (level.getChunkSource().getGenerator() instanceof OceanChunkGenerator generator) {
+            generator.syncSeedFromLevel(level);
+            return generator;
+        }
+        source.sendFailure(Component.literal(
+            "Команда работает только в мире с OceanChunkGenerator."
+        ));
+        return null;
+    }
+
+    private static int benchmarkStatus(CommandSourceStack source) {
+        OceanChunkGenerator generator = benchmarkGenerator(source);
+        if (generator == null) return 0;
+        source.sendSuccess(() -> Component.literal(
+            generator.diagnostics.compactStatus(generator.seed)
+        ), false);
+        return 1;
+    }
+
+    private static int benchmarkReport(CommandSourceStack source) {
+        OceanChunkGenerator generator = benchmarkGenerator(source);
+        if (generator == null) return 0;
+        generator.diagnostics.forceReport(generator.seed);
+        source.sendSuccess(() -> Component.literal(
+            generator.diagnostics.compactStatus(generator.seed)
+                + " | полный отчёт записан в latest.log"
+        ), false);
+        return 1;
+    }
+
+    private static int benchmarkThreads(CommandSourceStack source) {
+        OceanChunkGenerator generator = benchmarkGenerator(source);
+        if (generator == null) return 0;
+        String report = generator.diagnostics.threadStatus();
+        log.info("\n{}", report);
+        source.sendSuccess(() -> Component.literal(report), false);
+        return 1;
+    }
+
+    private static int benchmarkSlow(CommandSourceStack source) {
+        OceanChunkGenerator generator = benchmarkGenerator(source);
+        if (generator == null) return 0;
+        String report = generator.diagnostics.slowStatus();
+        log.info("\n{}", report);
+        source.sendSuccess(() -> Component.literal(report), false);
+        return 1;
+    }
+
+    private static int benchmarkReset(CommandSourceStack source) {
+        OceanChunkGenerator generator = benchmarkGenerator(source);
+        if (generator == null) return 0;
+        generator.diagnostics.reset();
+        generator.updateDiagnosticCacheSizes();
+        source.sendSuccess(() -> Component.literal(
+            "OceanGen benchmark сброшен; seed=" + generator.seed
+        ), true);
+        return 1;
+    }
+
+    private static int benchmarkExport(CommandSourceStack source) {
+        OceanChunkGenerator generator = benchmarkGenerator(source);
+        if (generator == null) return 0;
+        generator.diagnostics.exportCsv(generator.seed);
+        source.sendSuccess(() -> Component.literal(
+            "CSV-совместимый snapshot записан в latest.log"
+        ), false);
+        return 1;
+    }
+
+    private static int benchmarkVerbose(CommandSourceStack source, boolean enabled) {
+        OceanChunkGenerator generator = benchmarkGenerator(source);
+        if (generator == null) return 0;
+        generator.diagnostics.setVerbose(enabled);
+        source.sendSuccess(() -> Component.literal(
+            "OceanGen verbose=" + enabled
+        ), false);
         return 1;
     }
 
@@ -3256,16 +3422,6 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 String.format("%.2f", spRaw)
         );
         info.add("grid:  h=" + String.format("%.2f", gridH));
-        long cnt = chunkCount.sum();
-        if (cnt > 0) {
-            double avgUs = totalGenTimeNs.sum() / 1000.0 / cnt;
-            info.add(
-                "perf: chunks=" +
-                    cnt +
-                    " avg=" +
-                    String.format("%.1f", avgUs) +
-                    "us"
-            );
-        }
+        info.add(diagnostics.compactStatus(seed));
     }
 }
