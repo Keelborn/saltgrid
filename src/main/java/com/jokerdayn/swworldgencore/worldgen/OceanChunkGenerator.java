@@ -10,6 +10,7 @@ import com.mojang.brigadier.context.CommandContext;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import com.jokerdayn.swworldgencore.OceanGeneratorDiagnostics;
 import com.mojang.brigadier.arguments.BoolArgumentType;
+import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -43,13 +44,13 @@ import net.minecraft.world.level.levelgen.RandomState;
 import net.minecraft.world.level.levelgen.blending.Blender;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.fml.loading.FMLPaths;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 @EventBusSubscriber(
-    modid = SWWorldgenCore.MODID,
-    bus = EventBusSubscriber.Bus.GAME
+    modid = SWWorldgenCore.MODID
 )
 public class OceanChunkGenerator extends ChunkGenerator {
 
@@ -61,6 +62,14 @@ public class OceanChunkGenerator extends ChunkGenerator {
         new AtomicBoolean();
 
     private static final int BASE_FLOOR = 25;
+    private static final int GEN_MIN_Y = -64;
+    private static final int GEN_DEPTH = 384;
+    private static final int GEN_MAX_Y = GEN_MIN_Y + GEN_DEPTH - 1;
+    // Оставляем запас под кальдеру и лавовое озеро над уровнем моря.
+    private static final int MAX_SEA_LEVEL = GEN_MAX_Y - 64;
+    private static final int LOCAL_SAMPLE_SIZE = 18;
+    private static final int LOCAL_SAMPLE_AREA =
+        LOCAL_SAMPLE_SIZE * LOCAL_SAMPLE_SIZE;
     private static final int VOLCANO_COMMAND_SEARCH_RADIUS = 64;
     private static final int VOLCANO_COMMAND_SAFE_RADIUS = 10;
 
@@ -104,6 +113,9 @@ public class OceanChunkGenerator extends ChunkGenerator {
     private static final int SAVANNA_TREE_CELL = 11;
     private static final int SAVANNA_MAX_SLOPE = 3;
     private static final double SAVANNA_GROVE_THRESHOLD = 0.43;
+    private static final int[][] SAVANNA_SLOPE_SAMPLES = {
+        { 3, 0 }, { -3, 0 }, { 0, 3 }, { 0, -3 },
+    };
 
     // Часто используемые состояния
     private static final BlockState STONE_S = Blocks.STONE.defaultBlockState();
@@ -115,16 +127,49 @@ public class OceanChunkGenerator extends ChunkGenerator {
     private static final class ColumnCache {
 
         final int[] floor = new int[256];
-        final byte[] flags = new byte[256]; // bit0=island, bit1=volcano, bit2=crater
+        final byte[] flags = new byte[256]; // bit0=island, bit1=volcano
+    }
+
+    /** Неизменяемая раскладка валунов одного острова, общая для всех его чанков. */
+    private static final class BoulderLayout {
+
+        final int[] x = new int[BOULDER_MAX_COUNT];
+        final int[] z = new int[BOULDER_MAX_COUNT];
+        final double[] radius = new double[BOULDER_MAX_COUNT];
+        final long[] hash = new long[BOULDER_MAX_COUNT];
+        int count;
     }
 
     private final ConcurrentHashMap<Long, ColumnCache> DECOR_CACHE =
         new ConcurrentHashMap<>();
     private static final int DECOR_CACHE_MAX = 4096;
+    private final ConcurrentHashMap<Long, BoulderLayout> BOULDER_CACHE =
+        new ConcurrentHashMap<>();
+    private static final int BOULDER_CACHE_MAX = 2048;
+    /** Безопасный scratch: значение всегда считывается до вложенного floorAt(). */
+    private static final ThreadLocal<double[]> GRID_SAMPLE_SCRATCH =
+        ThreadLocal.withInitial(() -> new double[8]);
     private static final ShellBlock.Variation[] SHELL_VARIATIONS =
         ShellBlock.Variation.values();
     private static final GroundDecorationBlock.Type[] GROUND_DECORATION_TYPES =
         GroundDecorationBlock.Type.values();
+    private static final int[][][] BUSH_TEMPLATES = {
+        {
+            { 0, 0, 0 }, { 1, 0, 0 }, { -1, 0, 0 }, { 0, 0, 1 },
+            { 0, 0, -1 }, { 1, 0, 1 }, { -1, 0, -1 }, { 0, 1, 0 },
+            { 1, 1, 0 }, { 0, 1, 1 },
+        },
+        {
+            { 0, 0, 0 }, { 1, 0, 0 }, { -1, 0, 0 }, { 0, 0, 1 },
+            { 0, 0, -1 }, { 1, 0, -1 }, { -1, 0, 1 }, { 0, 1, 0 },
+            { -1, 1, 0 }, { 0, 1, -1 }, { 1, 1, 1 },
+        },
+        {
+            { 0, 0, 0 }, { 2, 0, 0 }, { -1, 0, 0 }, { 0, 0, 1 },
+            { 0, 0, -2 }, { 1, 0, 1 }, { -1, 0, -1 }, { 0, 1, 0 },
+            { 1, 1, 0 }, { 0, 1, 1 }, { -1, 1, 0 }, { 0, 2, 0 },
+        },
+    };
 
     public static final MapCodec<OceanChunkGenerator> CODEC =
         RecordCodecBuilder.mapCodec(instance ->
@@ -134,7 +179,9 @@ public class OceanChunkGenerator extends ChunkGenerator {
                         g -> g.biomeSource
                     ),
                     Codec.LONG.fieldOf("seed").forGetter(g -> g.seed),
-                    Codec.INT.fieldOf("sea_level").forGetter(g -> g.seaLevel)
+                    Codec.intRange(GEN_MIN_Y + 1, MAX_SEA_LEVEL)
+                        .fieldOf("sea_level")
+                        .forGetter(g -> g.seaLevel)
                 )
                 .apply(instance, OceanChunkGenerator::new)
         );
@@ -149,6 +196,11 @@ public class OceanChunkGenerator extends ChunkGenerator {
         int seaLevel
     ) {
         super(biomeSource);
+        if (seaLevel <= GEN_MIN_Y || seaLevel > MAX_SEA_LEVEL) {
+            throw new IllegalArgumentException(
+                "seaLevel must be in [" + (GEN_MIN_Y + 1) + ", " + MAX_SEA_LEVEL + "]"
+            );
+        }
         this.seed = seed;
         this.seaLevel = seaLevel;
         buildSeedOffsets();
@@ -178,6 +230,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
             FLOOR_CACHE.clear();
             BEACH_CACHE.clear();
             DECOR_CACHE.clear();
+            BOULDER_CACHE.clear();
             updateDiagnosticCacheSizes();
             // volatile seed публикуется последним: читатель нового seed уже видит offsets.
             seed = worldSeed;
@@ -207,6 +260,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
         FLOOR_CACHE.clear();
         BEACH_CACHE.clear();
         DECOR_CACHE.clear();
+        BOULDER_CACHE.clear();
         updateDiagnosticCacheSizes();
     }
 
@@ -343,30 +397,6 @@ public class OceanChunkGenerator extends ChunkGenerator {
         return val / max;
     }
 
-    private double biomeNoise(int x, int z) {
-        double wx =
-            x +
-            fbm(
-                x * 0.005 + seedOff(201, 8.0),
-                z * 0.005 + seedOff(202, 8.0),
-                3,
-                2.0,
-                0.5
-            ) *
-                150;
-        double wz =
-            z +
-            fbm(
-                x * 0.005 + seedOff(203, 8.0),
-                z * 0.005 + seedOff(204, 8.0),
-                3,
-                2.0,
-                0.5
-            ) *
-                150;
-        return fbm(wx * 0.006, wz * 0.006, 3, 2.0, 0.5);
-    }
-
     // -------------------------------------------------------------------------
     // Grid-острова
     // -------------------------------------------------------------------------
@@ -453,7 +483,13 @@ public class OceanChunkGenerator extends ChunkGenerator {
             // С��едующее кольцо начинается как минимум в CELL блоках дальше.
             // После дополнительного кольца текущий лучший кандидат уже не может проиграть.
             if (best != null) {
-                double nextRingMin = Math.max(0.0, (ring - 1.0) * CELL);
+                double nextRingMin = minimumDistanceToUnsearchedCells(
+                    px,
+                    pz,
+                    originCellX,
+                    originCellZ,
+                    ring
+                );
                 if (nextRingMin * nextRingMin > bestDistanceSq) break;
             }
         }
@@ -461,29 +497,64 @@ public class OceanChunkGenerator extends ChunkGenerator {
     }
 
     public int[] findNearestIslandCenter(int px, int pz) {
-        int cellX = Math.floorDiv(px, CELL),
-            cellZ = Math.floorDiv(pz, CELL);
-        int[] best = { px, pz };
+        int originCellX = Math.floorDiv(px, CELL);
+        int originCellZ = Math.floorDiv(pz, CELL);
+        int[] best = null;
         double bestDistSq = Double.MAX_VALUE;
-        for (int dx = -1; dx <= 1; dx++) {
-            for (int dz = -1; dz <= 1; dz++) {
-                int cx = cellX + dx,
-                    cz = cellZ + dz;
-                if (hsh(cx * 11, cz * 13) > 0.6) continue;
-                int ix = cx * CELL + 768 + (int) (hsh(cx * 2, cz * 2) * 512);
-                int iz =
-                    cz * CELL + 768 + (int) (hsh(cx * 2 + 1, cz * 2 + 1) * 512);
-                double dSq =
-                    (double) (ix - px) * (ix - px) +
-                    (double) (iz - pz) * (iz - pz);
-                if (dSq < bestDistSq) {
-                    bestDistSq = dSq;
-                    best[0] = ix;
-                    best[1] = iz;
+        for (int ring = 0; ring <= VOLCANO_COMMAND_SEARCH_RADIUS; ring++) {
+            for (int dx = -ring; dx <= ring; dx++) {
+                for (int dz = -ring; dz <= ring; dz++) {
+                    if (ring > 0 && Math.abs(dx) != ring && Math.abs(dz) != ring) continue;
+                    int cx = originCellX + dx;
+                    int cz = originCellZ + dz;
+                    if (hsh(cx * 11, cz * 13) > 0.6) continue;
+                    int ix = cx * CELL + 768 + (int) (hsh(cx * 2, cz * 2) * 512);
+                    int iz =
+                        cz * CELL + 768 + (int) (hsh(cx * 2 + 1, cz * 2 + 1) * 512);
+                    double dSq =
+                        (double) (ix - px) * (ix - px) +
+                        (double) (iz - pz) * (iz - pz);
+                    if (dSq < bestDistSq) {
+                        bestDistSq = dSq;
+                        best = new int[] { ix, iz };
+                    }
                 }
             }
+
+            if (best != null) {
+                double nextRingMin = minimumDistanceToUnsearchedCells(
+                    px,
+                    pz,
+                    originCellX,
+                    originCellZ,
+                    ring
+                );
+                if (nextRingMin * nextRingMin > bestDistSq) break;
+            }
         }
-        return best;
+        return best != null ? best : new int[] { 0, 0 };
+    }
+
+    private static double minimumDistanceToUnsearchedCells(
+        int px,
+        int pz,
+        int originCellX,
+        int originCellZ,
+        int searchedRing
+    ) {
+        long next = (long) searchedRing + 1L;
+        double positiveX =
+            ((long) originCellX + next) * CELL + 768.0 - px;
+        double negativeX =
+            px - (((long) originCellX - next) * CELL + 1280.0);
+        double positiveZ =
+            ((long) originCellZ + next) * CELL + 768.0 - pz;
+        double negativeZ =
+            pz - (((long) originCellZ - next) * CELL + 1280.0);
+        return Math.max(
+            0.0,
+            Math.min(Math.min(positiveX, negativeX), Math.min(positiveZ, negativeZ))
+        );
     }
 
     private void gridIslandSample(int x, int z, double[] out) {
@@ -511,8 +582,6 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 double dSq =
                     (double) (x - ix) * (x - ix) + (double) (z - iz) * (z - iz);
                 if (dSq >= bestDistSq) continue;
-                double radiusLimSq = radius * 1.3;
-                if (dSq > radiusLimSq * radiusLimSq) continue;
                 if (dSq >= radius * radius) continue;
                 bestDistSq = dSq;
                 bestRadius = radius;
@@ -833,13 +902,13 @@ public class OceanChunkGenerator extends ChunkGenerator {
     }
 
     private double gridIslandH(int x, int z) {
-        double[] out = new double[8];
+        double[] out = GRID_SAMPLE_SCRATCH.get();
         gridIslandSample(x, z, out);
         return out[2];
     }
 
     private double gridIslandDist(int x, int z) {
-        double[] out = new double[8];
+        double[] out = GRID_SAMPLE_SCRATCH.get();
         gridIslandSample(x, z, out);
         return out[0];
     }
@@ -921,9 +990,6 @@ public class OceanChunkGenerator extends ChunkGenerator {
         );
     }
 
-    private static final double MTN_CENTER_Z = -60.0;
-    private static final double MTN_RX = 95.0;
-    private static final double MTN_RZ = 50.0;
     private static final int MTN_HEIGHT = 80;
 
     private double islandH(int x, int z, double t) {
@@ -1004,10 +1070,6 @@ public class OceanChunkGenerator extends ChunkGenerator {
     // Выс��та колонки
     // -------------------------------------------------------------------------
 
-    private int computeFloor(int x, int z, double t, double spRaw) {
-        return computeFloor(x, z, t, spRaw, gridIslandH(x, z));
-    }
-
     private int computeFloor(
         int x,
         int z,
@@ -1068,12 +1130,12 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 oceanFloor,
                 seaLevel + (int) Math.round(spRaw)
             );
-            if (t <= 1.0) return islandFloor;
+            if (t <= 1.0) return clampFloor(islandFloor);
             double norm = (t - 1.0) / (maxT - 1.0);
             double blend = norm * norm * (3.0 - 2.0 * norm);
-            return (int) Math.round(
+            return clampFloor((int) Math.round(
                 islandFloor + (oceanFloor - islandFloor) * blend
-            );
+            ));
         }
         if (gridH > 0.01) {
             int gridFloor = Math.max(
@@ -1082,11 +1144,15 @@ public class OceanChunkGenerator extends ChunkGenerator {
             );
             double blend = Mth.clamp(gridH / 3.0, 0.0, 1.0);
             blend = blend * blend * (3.0 - 2.0 * blend);
-            return (int) Math.round(
+            return clampFloor((int) Math.round(
                 oceanFloor + (gridFloor - oceanFloor) * blend
-            );
+            ));
         }
-        return oceanFloor;
+        return clampFloor(oceanFloor);
+    }
+
+    private static int clampFloor(int floor) {
+        return Mth.clamp(floor, GEN_MIN_Y + 1, GEN_MAX_Y - 2);
     }
 
     // -------------------------------------------------------------------------
@@ -1154,25 +1220,118 @@ public class OceanChunkGenerator extends ChunkGenerator {
     private final ConcurrentHashMap<Long, Integer> FLOOR_CACHE =
         new ConcurrentHashMap<>();
     private static final int FLOOR_CACHE_MAX = 262144;
+    private static final int HOT_CACHE_SIZE = 8192;
+    private static final int HOT_CACHE_MASK = HOT_CACHE_SIZE - 1;
+    private final ThreadLocal<FloorHotCache> FLOOR_HOT_CACHE =
+        ThreadLocal.withInitial(FloorHotCache::new);
     private final ConcurrentHashMap<Long, Boolean> BEACH_CACHE =
         new ConcurrentHashMap<>();
     private static final int BEACH_CACHE_MAX = 131072;
+    private final ThreadLocal<BooleanHotCache> BEACH_HOT_CACHE =
+        ThreadLocal.withInitial(BooleanHotCache::new);
+    private static final int CACHE_TRIM_BATCH = 256;
+    private static final CacheTrimResult NO_CACHE_TRIM =
+        new CacheTrimResult(0, 0L);
+
+    private record CacheTrimResult(int removed, long elapsedNs) {}
+
+    private static int hotCacheIndex(long key) {
+        long mixed = key;
+        mixed ^= mixed >>> 33;
+        mixed *= 0xff51afd7ed558ccdl;
+        mixed ^= mixed >>> 33;
+        return (int) mixed & HOT_CACHE_MASK;
+    }
+
+    private static final class FloorHotCache {
+        private long seed = Long.MIN_VALUE;
+        private boolean initialized;
+        private long[] keys;
+        private int[] values;
+        private boolean[] occupied;
+
+        int get(long key, long currentSeed) {
+            ensureSeed(currentSeed);
+            int index = hotCacheIndex(key);
+            return occupied[index] && keys[index] == key
+                ? values[index]
+                : Integer.MIN_VALUE;
+        }
+
+        void put(long key, int value, long currentSeed) {
+            ensureSeed(currentSeed);
+            int index = hotCacheIndex(key);
+            keys[index] = key;
+            values[index] = value;
+            occupied[index] = true;
+        }
+
+        private void ensureSeed(long currentSeed) {
+            if (initialized && seed == currentSeed) return;
+            initialized = true;
+            seed = currentSeed;
+            keys = new long[HOT_CACHE_SIZE];
+            values = new int[HOT_CACHE_SIZE];
+            occupied = new boolean[HOT_CACHE_SIZE];
+        }
+    }
+
+    private static final class BooleanHotCache {
+        private long seed = Long.MIN_VALUE;
+        private boolean initialized;
+        private long[] keys;
+        private byte[] values;
+
+        int get(long key, long currentSeed) {
+            ensureSeed(currentSeed);
+            int index = hotCacheIndex(key);
+            if (values[index] == 0 || keys[index] != key) return -1;
+            return values[index] == 2 ? 1 : 0;
+        }
+
+        void put(long key, boolean value, long currentSeed) {
+            ensureSeed(currentSeed);
+            int index = hotCacheIndex(key);
+            keys[index] = key;
+            values[index] = (byte) (value ? 2 : 1);
+        }
+
+        private void ensureSeed(long currentSeed) {
+            if (initialized && seed == currentSeed) return;
+            initialized = true;
+            seed = currentSeed;
+            keys = new long[HOT_CACHE_SIZE];
+            values = new byte[HOT_CACHE_SIZE];
+        }
+    }
 
     /**
-     * Batch-trim with hysteresis: only trim when above 110% of max,
-     * and trim down to 80% of max. This reduces trim frequency ~5x.
+     * Incremental bounded eviction. The previous implementation removed about
+     * 40k entries synchronously after crossing 110% and produced visible
+     * worldgen stalls. Small batches keep the map near its limit without one
+     * long pause on the generation thread.
      */
-    private static int trimCache(ConcurrentHashMap<Long, ?> cache, int maxSize) {
+    private static CacheTrimResult trimCache(
+        ConcurrentHashMap<Long, ?> cache,
+        int maxSize
+    ) {
+        int size = cache.size();
+        if (size <= maxSize) return NO_CACHE_TRIM;
+        long started = System.nanoTime();
         int removed = 0;
-        int softMax = (int) (maxSize * 1.1);
-        int target = (int) (maxSize * 0.8);
-        if (cache.size() <= softMax) return removed;
-        int toRemove = Math.max(1, cache.size() - target);
+        int overflow = Math.max(1, size - maxSize);
+        int toRemove = Math.min(
+            size,
+            Math.min(CACHE_TRIM_BATCH, overflow + CACHE_TRIM_BATCH - 1)
+        );
         var iterator = cache.keySet().iterator();
         while (removed < toRemove && iterator.hasNext()) {
             if (cache.remove(iterator.next()) != null) removed++;
         }
-        return removed;
+        return new CacheTrimResult(
+            removed,
+            Math.max(0L, System.nanoTime() - started)
+        );
     }
 
     private void updateDiagnosticCacheSizes() {
@@ -1180,6 +1339,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
         diagnostics.cacheState(OceanGeneratorDiagnostics.Cache.BIOME, BIOME_CACHE.size(), BIOME_CACHE_MAX);
         diagnostics.cacheState(OceanGeneratorDiagnostics.Cache.BEACH, BEACH_CACHE.size(), BEACH_CACHE_MAX);
         diagnostics.cacheState(OceanGeneratorDiagnostics.Cache.DECOR, DECOR_CACHE.size(), DECOR_CACHE_MAX);
+        diagnostics.cacheState(OceanGeneratorDiagnostics.Cache.BOULDER, BOULDER_CACHE.size(), BOULDER_CACHE_MAX);
     }
 
     private static long colKey(int x, int z) {
@@ -1189,16 +1349,31 @@ public class OceanChunkGenerator extends ChunkGenerator {
     /** Высота пола колонки с кэшем — нужна для поиска воды рядом с берегом. */
     private int floorAt(int x, int z) {
         long key = colKey(x, z);
+        FloorHotCache hotCache = FLOOR_HOT_CACHE.get();
+        int hot = hotCache.get(key, seed);
+        if (hot != Integer.MIN_VALUE) {
+            diagnostics.cacheAccess(OceanGeneratorDiagnostics.Cache.FLOOR, true);
+            return hot;
+        }
         Integer cached = FLOOR_CACHE.get(key);
         diagnostics.cacheAccess(OceanGeneratorDiagnostics.Cache.FLOOR, cached != null);
-        if (cached != null) return cached;
+        if (cached != null) {
+            hotCache.put(key, cached, seed);
+            return cached;
+        }
         double st = islandDist(x, z);
         double spRaw = islandH(x, z, st);
-        int fl = computeFloor(x, z, st, spRaw);
+        double[] gridSample = GRID_SAMPLE_SCRATCH.get();
+        gridIslandSample(x, z, gridSample);
+        int fl = computeFloor(x, z, st, spRaw, gridSample[2]);
         FLOOR_CACHE.put(key, fl);
-        int removed = trimCache(FLOOR_CACHE, FLOOR_CACHE_MAX);
-        if (removed > 0) diagnostics.cacheTrim(OceanGeneratorDiagnostics.Cache.FLOOR, removed);
-        updateDiagnosticCacheSizes();
+        hotCache.put(key, fl, seed);
+        CacheTrimResult trim = trimCache(FLOOR_CACHE, FLOOR_CACHE_MAX);
+        if (trim.removed() > 0) diagnostics.cacheTrim(
+            OceanGeneratorDiagnostics.Cache.FLOOR,
+            trim.removed(),
+            trim.elapsedNs()
+        );
         return fl;
     }
 
@@ -1235,25 +1410,64 @@ public class OceanChunkGenerator extends ChunkGenerator {
     private boolean isBeach(int x, int z, int fl) {
         if (fl < seaLevel || fl > seaLevel + 5) return false;
         long key = colKey(x, z);
+        BooleanHotCache hotCache = BEACH_HOT_CACHE.get();
+        int hot = hotCache.get(key, seed);
+        if (hot >= 0) {
+            diagnostics.cacheAccess(OceanGeneratorDiagnostics.Cache.BEACH, true);
+            return hot == 1;
+        }
         Boolean cached = BEACH_CACHE.get(key);
         diagnostics.cacheAccess(OceanGeneratorDiagnostics.Cache.BEACH, cached != null);
-        if (cached != null) return cached;
+        if (cached != null) {
+            hotCache.put(key, cached, seed);
+            return cached;
+        }
 
         int width = (int) beachWidthAt(x, z);
+        int farthestSample = 1;
+        for (int d = 1; d <= width; d += d < 4 ? 1 : 3) {
+            farthestSample = d;
+        }
         boolean beach = false;
+        int floorSamples = 0;
         search:
         for (int[] dir : BEACH_DIRS) {
+            // Most eligible low columns are close to the coast. Testing the
+            // far edge first proves "water within width" with one lookup in
+            // the common case while preserving the original near scan as a
+            // fallback for coves and narrow channels.
+            floorSamples++;
+            if (
+                floorAt(
+                    x + dir[0] * farthestSample,
+                    z + dir[1] * farthestSample
+                ) < seaLevel
+            ) {
+                beach = true;
+                break;
+            }
             for (int d = 1; d <= width; d += d < 4 ? 1 : 3) {
+                if (d == farthestSample) continue;
+                floorSamples++;
                 if (floorAt(x + dir[0] * d, z + dir[1] * d) < seaLevel) {
                     beach = true;
                     break search;
                 }
             }
         }
+        diagnostics.add(OceanGeneratorDiagnostics.Counter.BEACH_SEARCHES, 1L);
+        diagnostics.add(
+            OceanGeneratorDiagnostics.Counter.BEACH_FLOOR_SAMPLES,
+            floorSamples
+        );
         BEACH_CACHE.put(key, beach);
-        int removed = trimCache(BEACH_CACHE, BEACH_CACHE_MAX);
-        if (removed > 0) diagnostics.cacheTrim(OceanGeneratorDiagnostics.Cache.BEACH, removed);
-        updateDiagnosticCacheSizes();
+        hotCache.put(key, beach, seed);
+        CacheTrimResult trim = trimCache(BEACH_CACHE, BEACH_CACHE_MAX);
+        if (trim.removed() > 0) diagnostics.cacheTrim(
+            OceanGeneratorDiagnostics.Cache.BEACH,
+            trim.removed(),
+            trim.elapsedNs()
+        );
         return beach;
     }
 
@@ -1356,7 +1570,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
         int fl = floorAt(x, z);
 
         BiomeCategory result;
-        double[] gridSample = new double[8];
+        double[] gridSample = GRID_SAMPLE_SCRATCH.get();
         gridIslandSample(x, z, gridSample);
         boolean volcanicLand = gridSample[3] > 0.5 && fl >= seaLevel;
         if (volcanicLand) {
@@ -1374,9 +1588,12 @@ public class OceanChunkGenerator extends ChunkGenerator {
         }
 
         BIOME_CACHE.put(key, result);
-        int removed = trimCache(BIOME_CACHE, BIOME_CACHE_MAX);
-        if (removed > 0) diagnostics.cacheTrim(OceanGeneratorDiagnostics.Cache.BIOME, removed);
-        updateDiagnosticCacheSizes();
+        CacheTrimResult trim = trimCache(BIOME_CACHE, BIOME_CACHE_MAX);
+        if (trim.removed() > 0) diagnostics.cacheTrim(
+            OceanGeneratorDiagnostics.Cache.BIOME,
+            trim.removed(),
+            trim.elapsedNs()
+        );
         return result;
     }
 
@@ -1385,14 +1602,14 @@ public class OceanChunkGenerator extends ChunkGenerator {
      * от мировых координат и центра конкретного вулкана, поэтому бесшовно между чанками.
      * result[0] — расстояние, result[1] — индекс ближайшего потока.
      */
-    private void volcanicFlowField(
+    private double volcanicFlowDistance(
         int x,
         int z,
         double islandT,
         double centerX,
         double centerZ,
         long volcanoHash,
-        double[] result
+        int[] nearestIndexOut
     ) {
         double angle = Math.atan2(z - centerZ, x - centerX);
         double nearest = Math.PI;
@@ -1412,8 +1629,8 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 nearestIndex = flow;
             }
         }
-        result[0] = nearest;
-        result[1] = nearestIndex;
+        if (nearestIndexOut != null) nearestIndexOut[0] = nearestIndex;
+        return nearest;
     }
 
     /**
@@ -1435,11 +1652,18 @@ public class OceanChunkGenerator extends ChunkGenerator {
         double broad = fbm(x * 0.012 + 503.0, z * 0.012 - 277.0, 3, 2.0, 0.52);
         double grain = hsh(x * 43 + floor * 7, z * 47 - floor * 11);
         long volcanoHash = rawHash((int) centerX * 17, (int) centerZ * 19);
-        double[] flow = new double[2];
-        volcanicFlowField(x, z, islandT, centerX, centerZ, volcanoHash, flow);
+        double flowDistance = volcanicFlowDistance(
+            x,
+            z,
+            islandT,
+            centerX,
+            centerZ,
+            volcanoHash,
+            null
+        );
 
         double flowWidth = 0.040 + Mth.clamp((islandT - 0.20) / 0.70, 0.0, 1.0) * 0.070;
-        double flowEdge = flow[0] / flowWidth;
+        double flowEdge = flowDistance / flowWidth;
         boolean frozenFlow = islandT > 0.21 && islandT < 0.97 && flowEdge < 1.0;
         double beachEdge = 0.91 + (broad - 0.5) * 0.045;
 
@@ -1512,6 +1736,36 @@ public class OceanChunkGenerator extends ChunkGenerator {
         }
         double blackstoneChance = 0.56 + summitness * 0.10;
         return slopeMix < blackstoneChance
+            ? Blocks.BLACKSTONE.defaultBlockState()
+            : Blocks.BASALT.defaultBlockState();
+    }
+
+    /** Одна и та же вулканическая толща для чанка и запросов getBaseColumn(). */
+    private BlockState volcanicSubsurface(
+        int x,
+        int y,
+        int z,
+        double islandT,
+        boolean crater,
+        int lavaLevel,
+        double fissure,
+        int strataShift
+    ) {
+        double rock = hsh(x * 43 + y, z * 47 - y);
+        boolean ashStrata = Math.floorMod(y + strataShift, 6) < 2;
+        if (crater && y <= lavaLevel + 1 && rock < 0.18) {
+            return Blocks.MAGMA_BLOCK.defaultBlockState();
+        }
+        if (crater && y <= lavaLevel && rock < 0.30) {
+            return Blocks.OBSIDIAN.defaultBlockState();
+        }
+        if (fissure > 0.91 && rock < 0.22) {
+            return Blocks.MAGMA_BLOCK.defaultBlockState();
+        }
+        if (rock < 0.16) return Blocks.BLACKSTONE.defaultBlockState();
+        if (ashStrata && rock < 0.52) return Blocks.TUFF.defaultBlockState();
+        if (rock < 0.34) return Blocks.SMOOTH_BASALT.defaultBlockState();
+        return islandT > 0.58 && rock < 0.62
             ? Blocks.BLACKSTONE.defaultBlockState()
             : Blocks.BASALT.defaultBlockState();
     }
@@ -1591,6 +1845,24 @@ public class OceanChunkGenerator extends ChunkGenerator {
             seed
         );
         Throwable benchmarkError = null;
+        long sampleNs = 0L;
+        long cacheNs = 0L;
+        long classifyNs = 0L;
+        long prepareNs = 0L;
+        long writeNs = 0L;
+        int landColumns = 0;
+        int oceanColumns = 0;
+        int spawnIslandColumns = 0;
+        int gridIslandColumns = 0;
+        int volcanoColumns = 0;
+        int craterColumns = 0;
+        int beachColumns = 0;
+        int slopeColumns = 0;
+        int underwaterSlabs = 0;
+        int seagrassBlocks = 0;
+        long solidBlockWrites = 0L;
+        long waterBlockWrites = 0L;
+        long lavaBlockWrites = 0L;
         try {
 
         if (cx == 0 && cz == 0 && spawnDebugLogged.compareAndSet(false, true)) {
@@ -1610,21 +1882,22 @@ public class OceanChunkGenerator extends ChunkGenerator {
             );
         }
 
-        int[][] heights = new int[18][18];
-        double[][] dists = new double[18][18];
-        double[][] islands = new double[18][18];
-        double[][] grids = new double[18][18];
-        double[][] gridDi = new double[18][18];
-        double[][] gridRi = new double[18][18];
-        double[][] volcanoCenterX = new double[18][18];
-        double[][] volcanoCenterZ = new double[18][18];
-        boolean[][] volcanoes = new boolean[18][18];
-        boolean[][] craters = new boolean[18][18];
-        int[][] lavaLevels = new int[18][18];
+        long sampleStarted = System.nanoTime();
+        // Плоские массивы убирают сотни короткоживущих объектов на каждый чанк.
+        int[] heights = new int[LOCAL_SAMPLE_AREA];
+        double[] dists = new double[LOCAL_SAMPLE_AREA];
+        double[] islands = new double[LOCAL_SAMPLE_AREA];
+        double[] grids = new double[LOCAL_SAMPLE_AREA];
+        double[] gridDi = new double[LOCAL_SAMPLE_AREA];
+        double[] volcanoCenterX = new double[LOCAL_SAMPLE_AREA];
+        double[] volcanoCenterZ = new double[LOCAL_SAMPLE_AREA];
+        byte[] terrainFlags = new byte[LOCAL_SAMPLE_AREA];
+        int[] lavaLevels = new int[LOCAL_SAMPLE_AREA];
         double[] grid = new double[8];
 
         ColumnCache colCache = new ColumnCache();
         int maxFl = Integer.MIN_VALUE;
+        int maxLavaLevel = seaLevel;
 
         for (int lx = -1; lx <= 16; lx++) {
             for (int lz = -1; lz <= 16; lz++) {
@@ -1633,22 +1906,29 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 double st = islandDist(wx, wz);
                 double spRaw = islandH(wx, wz, st);
                 gridIslandSample(wx, wz, grid);
-                double gridD = grid[0],
-                    gridR = grid[1],
-                    gridH = grid[2];
+                double gridD = grid[0];
+                double gridH = grid[2];
                 int fl = computeFloor(wx, wz, st, spRaw, gridH);
+                int sampleIndex =
+                    (lx + 1) * LOCAL_SAMPLE_SIZE + lz + 1;
 
-                dists[lx + 1][lz + 1] = st;
-                islands[lx + 1][lz + 1] = spRaw;
-                grids[lx + 1][lz + 1] = gridH;
-                gridDi[lx + 1][lz + 1] = gridD;
-                gridRi[lx + 1][lz + 1] = gridR;
-                volcanoCenterX[lx + 1][lz + 1] = grid[5];
-                volcanoCenterZ[lx + 1][lz + 1] = grid[6];
-                volcanoes[lx + 1][lz + 1] = grid[3] > 0.5;
-                craters[lx + 1][lz + 1] = grid[4] > 0.5;
-                lavaLevels[lx + 1][lz + 1] = (int) Math.round(grid[7]);
-                heights[lx + 1][lz + 1] = fl;
+                dists[sampleIndex] = st;
+                islands[sampleIndex] = spRaw;
+                grids[sampleIndex] = gridH;
+                gridDi[sampleIndex] = gridD;
+                volcanoCenterX[sampleIndex] = grid[5];
+                volcanoCenterZ[sampleIndex] = grid[6];
+                int terrainFlag = grid[3] > 0.5 ? FLAG_VOLCANO : 0;
+                if (grid[4] > 0.5) {
+                    terrainFlag |= FLAG_CRATER;
+                    maxLavaLevel = Math.max(
+                        maxLavaLevel,
+                        (int) Math.round(grid[7])
+                    );
+                }
+                terrainFlags[sampleIndex] = (byte) terrainFlag;
+                lavaLevels[sampleIndex] = (int) Math.round(grid[7]);
+                heights[sampleIndex] = fl;
 
                 if (fl > maxFl) maxFl = fl;
 
@@ -1657,19 +1937,157 @@ public class OceanChunkGenerator extends ChunkGenerator {
                     colCache.floor[idx] = fl;
                     int flags = spRaw > 0.0 || gridH > 0.5 ? FLAG_ISLAND : 0;
                     if (grid[3] > 0.5) flags |= FLAG_VOLCANO;
-                    if (grid[4] > 0.5) flags |= FLAG_CRATER;
                     colCache.flags[idx] = (byte) flags;
                 }
             }
         }
+        sampleNs = System.nanoTime() - sampleStarted;
+        diagnostics.phase(
+            benchmark,
+            OceanGeneratorDiagnostics.Phase.FILL_SAMPLE_TERRAIN,
+            sampleNs
+        );
 
+        long cacheStarted = System.nanoTime();
         DECOR_CACHE.put(cp.toLong(), colCache);
-        int decorRemoved = trimCache(DECOR_CACHE, DECOR_CACHE_MAX);
-        if (decorRemoved > 0) diagnostics.cacheTrim(OceanGeneratorDiagnostics.Cache.DECOR, decorRemoved);
+        CacheTrimResult decorTrim = trimCache(DECOR_CACHE, DECOR_CACHE_MAX);
+        if (decorTrim.removed() > 0) diagnostics.cacheTrim(
+            OceanGeneratorDiagnostics.Cache.DECOR,
+            decorTrim.removed(),
+            decorTrim.elapsedNs()
+        );
         updateDiagnosticCacheSizes();
+        cacheNs = System.nanoTime() - cacheStarted;
+        diagnostics.phase(
+            benchmark,
+            OceanGeneratorDiagnostics.Phase.FILL_PUBLISH_CACHE,
+            cacheNs
+        );
 
+        long classifyStarted = System.nanoTime();
+        int[] dirtLayerCounts = new int[256];
+        int[] volcanicStrataShifts = new int[256];
+        byte[] underwaterPlants = new byte[256];
+        boolean[] underwaterSlabColumns = new boolean[256];
+        BlockState[] surfaceStates = new BlockState[256];
+        BlockState[] subsurfaceStates = new BlockState[256];
+        double[] volcanicFissures = new double[256];
+        double maxT = 1.0 + SPAWN_ISLAND_FEATHER / SPAWN_ISLAND_RADIUS;
+
+        // Surface classification is intentionally separate from section writes.
+        // It contains shoreline searches and material selection, so expensive
+        // terrain math can no longer masquerade as slow block I/O in reports.
+        for (int lx = 0; lx < 16; lx++) {
+            for (int lz = 0; lz < 16; lz++) {
+                int wx = cx * 16 + lx;
+                int wz = cz * 16 + lz;
+                int columnIndex = (lx << 4) | lz;
+                int sampleIndex = (lx + 1) * LOCAL_SAMPLE_SIZE + lz + 1;
+                int fl = heights[sampleIndex];
+                double st = dists[sampleIndex];
+                double spRaw = islands[sampleIndex];
+                double gridHi = grids[sampleIndex];
+                double gridDist = gridDi[sampleIndex];
+                boolean volcano = (terrainFlags[sampleIndex] & FLAG_VOLCANO) != 0;
+                boolean crater = (terrainFlags[sampleIndex] & FLAG_CRATER) != 0;
+                int lavaLevel = lavaLevels[sampleIndex];
+                boolean onSlope =
+                    fl < heights[sampleIndex - LOCAL_SAMPLE_SIZE] ||
+                    fl < heights[sampleIndex + LOCAL_SAMPLE_SIZE] ||
+                    fl < heights[sampleIndex - 1] ||
+                    fl < heights[sampleIndex + 1];
+                boolean onIsland = spRaw > 0.0 || gridHi > 0.5;
+
+                if (fl < seaLevel) oceanColumns++;
+                else landColumns++;
+                if (spRaw > 0.0) spawnIslandColumns++;
+                if (gridHi > 0.5) gridIslandColumns++;
+                if (volcano) volcanoColumns++;
+                if (crater) craterColumns++;
+                if (onSlope) slopeColumns++;
+
+                int minNeighbor = Math.min(
+                    Math.min(
+                        heights[sampleIndex - LOCAL_SAMPLE_SIZE],
+                        heights[sampleIndex + LOCAL_SAMPLE_SIZE]
+                    ),
+                    Math.min(
+                        heights[sampleIndex - 1],
+                        heights[sampleIndex + 1]
+                    )
+                );
+                int cliffDrop = Math.max(0, fl - minNeighbor);
+                int dirtLayers;
+                if (volcano) {
+                    dirtLayers = gridDist > 0.70
+                        ? Math.max(3, Math.min(cliffDrop + 2, 8))
+                        : Math.max(3, Math.min(cliffDrop + 2, 24));
+                } else if (fl >= seaLevel && onIsland) {
+                    dirtLayers = 3;
+                } else if (st < maxT) {
+                    dirtLayers = 2;
+                } else {
+                    dirtLayers = 0;
+                }
+                dirtLayerCounts[columnIndex] = dirtLayers;
+
+                boolean beach = isBeach(wx, wz, fl);
+                if (beach) beachColumns++;
+                BlockState surface = volcano
+                    ? volcanicBiomeSurface(
+                        wx,
+                        wz,
+                        fl,
+                        gridDist,
+                        crater,
+                        lavaLevel,
+                        volcanoCenterX[sampleIndex],
+                        volcanoCenterZ[sampleIndex]
+                    )
+                    : pickSurf(wx, wz, fl, st, gridHi, gridDist, beach);
+                surfaceStates[columnIndex] = surface;
+
+                if (dirtLayers > 0) {
+                    if (volcano && gridDist <= 0.70) {
+                        volcanicFissures[columnIndex] = ridgeNoise(
+                            wx * 0.055 + 811.0,
+                            wz * 0.055 - 419.0,
+                            2,
+                            2.0,
+                            0.5
+                        );
+                        volcanicStrataShifts[columnIndex] =
+                            (int) (hsh(wx >> 4, wz >> 4) * 5);
+                    } else {
+                        subsurfaceStates[columnIndex] = volcano
+                            ? (hsh(wx * 181, wz * 191) < 0.72
+                                ? Blocks.DIRT.defaultBlockState()
+                                : Blocks.BASALT.defaultBlockState())
+                            : subSurf(wx, wz, fl, st, spRaw, gridHi, beach);
+                    }
+                }
+
+                if (fl < seaLevel) {
+                    if (onSlope && onIsland) {
+                        underwaterSlabColumns[columnIndex] = true;
+                    } else if (hasGrass(wx, wz, fl)) {
+                        underwaterPlants[columnIndex] = (byte) (
+                            hsh(wx * 17, wz * 23) < 0.3 ? 2 : 1
+                        );
+                    }
+                }
+            }
+        }
+        classifyNs = System.nanoTime() - classifyStarted;
+        diagnostics.phase(
+            benchmark,
+            OceanGeneratorDiagnostics.Phase.FILL_CLASSIFY_SURFACE,
+            classifyNs
+        );
+
+        long prepareStarted = System.nanoTime();
         int minY = chunk.getMinBuildHeight();
-        int maxWorkY = Math.max(maxFl + 2, seaLevel);
+        int maxWorkY = Math.max(maxFl + 2, maxLavaLevel);
 
         int minSec = chunk.getSectionIndex(minY);
         int maxSec = chunk.getSectionIndex(maxWorkY);
@@ -1681,51 +2099,32 @@ public class OceanChunkGenerator extends ChunkGenerator {
         Heightmap hmSurface = chunk.getOrCreateHeightmapUnprimed(
             Heightmap.Types.WORLD_SURFACE_WG
         );
+        prepareNs = System.nanoTime() - prepareStarted;
+        diagnostics.phase(
+            benchmark,
+            OceanGeneratorDiagnostics.Phase.FILL_PREPARE_SECTIONS,
+            prepareNs
+        );
 
-        double maxT = 1.0 + SPAWN_ISLAND_FEATHER / SPAWN_ISLAND_RADIUS;
-
+        long writeStarted = System.nanoTime();
         try {
             for (int lx = 0; lx < 16; lx++) {
                 for (int lz = 0; lz < 16; lz++) {
                     int wx = cx * 16 + lx,
                         wz = cz * 16 + lz;
-                    int fl = heights[lx + 1][lz + 1];
-                    double st = dists[lx + 1][lz + 1];
-                    double spRaw = islands[lx + 1][lz + 1];
-                    double gridHi = grids[lx + 1][lz + 1];
-                    double gridDist = gridDi[lx + 1][lz + 1];
-                    double gridRad = gridRi[lx + 1][lz + 1];
-                    boolean volcano = volcanoes[lx + 1][lz + 1];
-                    boolean crater = craters[lx + 1][lz + 1];
-                    int lavaLevel = lavaLevels[lx + 1][lz + 1];
-
-                    boolean onSlope =
-                        fl < heights[lx][lz + 1] ||
-                        fl < heights[lx + 2][lz + 1] ||
-                        fl < heights[lx + 1][lz] ||
-                        fl < heights[lx + 1][lz + 2];
-
-                    boolean onIsland = spRaw > 0 || gridHi > 0.5;
-                    // Глубина вулканической «кожи» адаптивна к крутизне: на
-                    // обрывах (стенки кратера, кромка, овраги) соседняя колонна
-                    // может быть на 10+ блоков ниже, и без этого наружу вылезала
-                    // бы серая полоса голого камня посреди чёрного склона.
-                    int minNeighbor = Math.min(
-                        Math.min(heights[lx][lz + 1], heights[lx + 2][lz + 1]),
-                        Math.min(heights[lx + 1][lz], heights[lx + 1][lz + 2])
-                    );
-                    int cliffDrop = Math.max(0, fl - minNeighbor);
-                    int dirtLayers;
-                    if (volcano) {
-                        dirtLayers = gridDist > 0.70
-                            ? Math.max(3, Math.min(cliffDrop + 2, 8))
-                            : Math.max(3, Math.min(cliffDrop + 2, 24));
-                    }
-                    else if (fl >= seaLevel && onIsland) dirtLayers = 3;
-                    else if (st < maxT) dirtLayers = 2;
-                    else dirtLayers = 0;
-
-                    boolean beach = isBeach(wx, wz, fl);
+                    int sampleIndex =
+                        (lx + 1) * LOCAL_SAMPLE_SIZE + lz + 1;
+                    int columnIndex = (lx << 4) | lz;
+                    int fl = heights[sampleIndex];
+                    double gridDist = gridDi[sampleIndex];
+                    boolean volcano =
+                        (terrainFlags[sampleIndex] & FLAG_VOLCANO) != 0;
+                    boolean crater =
+                        (terrainFlags[sampleIndex] & FLAG_CRATER) != 0;
+                    int lavaLevel = lavaLevels[sampleIndex];
+                    int dirtLayers = dirtLayerCounts[columnIndex];
+                    BlockState surf = surfaceStates[columnIndex];
+                    solidBlockWrites += fl - (long) minY + 1L;
 
                     setDirect(chunk, lx, minY, lz, BEDROCK_S);
                     fillYRange(
@@ -1742,60 +2141,27 @@ public class OceanChunkGenerator extends ChunkGenerator {
                             // Каждый блок кожи получает свою породу по своему Y:
                             // стенки обрывов выглядят как настоящий слоёный
                             // стратовулкан, а не как вертикальная копия поверхности.
-                            double layerFissure = ridgeNoise(
-                                wx * 0.055 + 811.0,
-                                wz * 0.055 - 419.0,
-                                2,
-                                2.0,
-                                0.5
-                            );
-                            int strataShift = (int) (hsh(wx >> 4, wz >> 4) * 5);
+                            double layerFissure = volcanicFissures[columnIndex];
+                            int strataShift = volcanicStrataShifts[columnIndex];
                             for (int depth = 1; depth <= dirtLayers; depth++) {
                                 int by = fl - depth;
-                                double layerRock = hsh(wx * 43 + by, wz * 47 - by);
-                                // Стратовулкан — слоёный пирог: горизонтальные
-                                // прослойки спрессованного пепла (туфа)
-                                // чередуются с базальтом.
-                                boolean ashStrata = ((by + strataShift) % 6 + 6) % 6 < 2;
-                                BlockState skin;
-                                if (crater && by <= lavaLevel + 1 && layerRock < 0.18) {
-                                    skin = Blocks.MAGMA_BLOCK.defaultBlockState();
-                                } else if (crater && by <= lavaLevel && layerRock < 0.30) {
-                                    // Обсидиановые жилы у самой лавы: расплав,
-                                    // закалённый о холодную стенку жерла.
-                                    skin = Blocks.OBSIDIAN.defaultBlockState();
-                                } else if (layerFissure > 0.91 && layerRock < 0.22) {
-                                    skin = Blocks.MAGMA_BLOCK.defaultBlockState();
-                                } else if (layerRock < 0.16) {
-                                    skin = Blocks.BLACKSTONE.defaultBlockState();
-                                } else if (ashStrata && layerRock < 0.52) {
-                                    skin = Blocks.TUFF.defaultBlockState();
-                                } else if (layerRock < 0.34) {
-                                    skin = Blocks.SMOOTH_BASALT.defaultBlockState();
-                                } else if (gridDist > 0.58 && layerRock < 0.62) {
-                                    skin = Blocks.BLACKSTONE.defaultBlockState();
-                                } else {
-                                    skin = Blocks.BASALT.defaultBlockState();
-                                }
+                                BlockState skin = volcanicSubsurface(
+                                    wx,
+                                    by,
+                                    wz,
+                                    gridDist,
+                                    crater,
+                                    lavaLevel,
+                                    layerFissure,
+                                    strataShift
+                                );
                                 setDirect(chunk, lx, by, lz, skin);
                             }
                         } else {
                             // На внешнем зелёном поясе вулкана под травой лежи��
                             // тонкий плодородный слой на вулканическом базальте —
                             // молодая почва, наросшая на застывшей лаве.
-                            BlockState sub = volcano
-                                ? (hsh(wx * 181, wz * 191) < 0.72
-                                    ? Blocks.DIRT.defaultBlockState()
-                                    : Blocks.BASALT.defaultBlockState())
-                                : subSurf(
-                                    wx,
-                                    wz,
-                                    fl,
-                                    st,
-                                    spRaw,
-                                    gridHi,
-                                    beach
-                                );
+                            BlockState sub = subsurfaceStates[columnIndex];
                             fillYRange(
                                 chunk,
                                 lx,
@@ -1807,34 +2173,12 @@ public class OceanChunkGenerator extends ChunkGenerator {
                         }
                     }
 
-                    BlockState surf;
-                    if (volcano) {
-                        surf = volcanicBiomeSurface(
-                            wx,
-                            wz,
-                            fl,
-                            gridDist,
-                            crater,
-                            lavaLevel,
-                            volcanoCenterX[lx + 1][lz + 1],
-                            volcanoCenterZ[lx + 1][lz + 1]
-                        );
-                    } else {
-                        surf = pickSurf(
-                            wx,
-                            wz,
-                            fl,
-                            st,
-                            gridHi,
-                            gridDist,
-                            beach
-                        );
-                    }
                     setDirect(chunk, lx, fl, lz, surf);
                     hmOcean.update(lx, fl, lz, surf);
                     hmSurface.update(lx, fl, lz, surf);
 
                     if (crater && fl < lavaLevel) {
+                        lavaBlockWrites += lavaLevel - (long) fl;
                         fillYRange(
                             chunk,
                             lx,
@@ -1854,7 +2198,9 @@ public class OceanChunkGenerator extends ChunkGenerator {
                     if (fl < seaLevel) {
                         int waterFrom = fl + 1;
 
-                        if (onSlope && onIsland) {
+                        if (underwaterSlabColumns[columnIndex]) {
+                            underwaterSlabs++;
+                            solidBlockWrites++;
                             BlockState sl = slab(surf)
                                 .setValue(SlabBlock.TYPE, SlabType.BOTTOM)
                                 .setValue(SlabBlock.WATERLOGGED, true);
@@ -1862,8 +2208,9 @@ public class OceanChunkGenerator extends ChunkGenerator {
                             hmOcean.update(lx, fl + 1, lz, sl);
                             hmSurface.update(lx, fl + 1, lz, sl);
                             waterFrom = fl + 2;
-                        } else if (hasGrass(wx, wz, fl)) {
-                            if (hsh(wx * 17, wz * 23) < 0.3) {
+                        } else if (underwaterPlants[columnIndex] != 0) {
+                            if (underwaterPlants[columnIndex] == 2) {
+                                seagrassBlocks += 2;
                                 BlockState lower =
                                     Blocks.TALL_SEAGRASS.defaultBlockState().setValue(
                                         TallSeagrassBlock.HALF,
@@ -1879,6 +2226,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                                 hmSurface.update(lx, fl + 2, lz, upper);
                                 waterFrom = fl + 3;
                             } else {
+                                seagrassBlocks++;
                                 BlockState sg =
                                     Blocks.SEAGRASS.defaultBlockState();
                                 setDirect(chunk, lx, fl + 1, lz, sg);
@@ -1888,6 +2236,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                         }
 
                         if (waterFrom <= seaLevel) {
+                            waterBlockWrites += seaLevel - (long) waterFrom + 1L;
                             fillYRange(
                                 chunk,
                                 lx,
@@ -1906,13 +2255,50 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 .getSection(i)
                 .release();
         }
+        writeNs = System.nanoTime() - writeStarted;
+        diagnostics.phase(
+            benchmark,
+            OceanGeneratorDiagnostics.Phase.FILL_WRITE_SECTIONS,
+            writeNs
+        );
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.COLUMNS_TOTAL, 256L);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.COLUMNS_LAND, landColumns);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.COLUMNS_OCEAN, oceanColumns);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.COLUMNS_SPAWN_ISLAND, spawnIslandColumns);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.COLUMNS_GRID_ISLAND, gridIslandColumns);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.COLUMNS_VOLCANO, volcanoColumns);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.COLUMNS_CRATER, craterColumns);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.COLUMNS_BEACH, beachColumns);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.COLUMNS_SLOPE, slopeColumns);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.SOLID_BLOCK_WRITES, solidBlockWrites);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.WATER_BLOCK_WRITES, waterBlockWrites);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.LAVA_BLOCK_WRITES, lavaBlockWrites);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.UNDERWATER_SLABS, underwaterSlabs);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.SEAGRASS_BLOCKS, seagrassBlocks);
 
         return CompletableFuture.completedFuture(chunk);
         } catch (RuntimeException | Error error) {
             benchmarkError = error;
             throw error;
         } finally {
-            diagnostics.end(benchmark, seed, benchmarkError);
+            String detail = null;
+            if (
+                System.nanoTime() - benchmark.startedNs() >
+                    OceanGeneratorDiagnostics.Stage.FILL_NOISE.budgetNs()
+            ) {
+                detail =
+                    "sampleMs=" + sampleNs / 1_000_000.0 +
+                    ",cacheMs=" + cacheNs / 1_000_000.0 +
+                    ",classifyMs=" + classifyNs / 1_000_000.0 +
+                    ",prepareMs=" + prepareNs / 1_000_000.0 +
+                    ",writeMs=" + writeNs / 1_000_000.0 +
+                    ",land=" + landColumns +
+                    ",ocean=" + oceanColumns +
+                    ",volcano=" + volcanoColumns +
+                    ",crater=" + craterColumns +
+                    ",slopes=" + slopeColumns;
+            }
+            diagnostics.end(benchmark, seed, benchmarkError, detail);
         }
     }
 
@@ -1935,27 +2321,65 @@ public class OceanChunkGenerator extends ChunkGenerator {
         GenerationStep.Carving step
     ) {}
 
+    private void recordPalmPlacement(
+        OceanGeneratorDiagnostics.Token benchmark,
+        PalmGenerator.PlacementResult result
+    ) {
+        diagnostics.phase(
+            benchmark,
+            OceanGeneratorDiagnostics.Phase.TREE_PALM_PREFLIGHT,
+            result.preflightNs()
+        );
+        if (result.writeNs() > 0L) {
+            diagnostics.phase(
+                benchmark,
+                OceanGeneratorDiagnostics.Phase.TREE_PALM_WRITE,
+                result.writeNs()
+            );
+        }
+        diagnostics.add(
+            benchmark,
+            OceanGeneratorDiagnostics.Counter.PALM_BLOCK_WRITES,
+            result.blocksWritten()
+        );
+        if (!result.placed()) diagnostics.add(
+            benchmark,
+            OceanGeneratorDiagnostics.Counter.TREE_PREFLIGHT_FAILURES,
+            1L
+        );
+    }
+
+    private void recordAcaciaPlacement(
+        OceanGeneratorDiagnostics.Token benchmark,
+        AcaciaGenerator.PlacementResult result
+    ) {
+        diagnostics.phase(
+            benchmark,
+            OceanGeneratorDiagnostics.Phase.TREE_ACACIA_PREFLIGHT,
+            result.preflightNs()
+        );
+        if (result.writeNs() > 0L) {
+            diagnostics.phase(
+                benchmark,
+                OceanGeneratorDiagnostics.Phase.TREE_ACACIA_WRITE,
+                result.writeNs()
+            );
+        }
+        diagnostics.add(
+            benchmark,
+            OceanGeneratorDiagnostics.Counter.ACACIA_BLOCK_WRITES,
+            result.blocksWritten()
+        );
+        if (!result.placed()) diagnostics.add(
+            benchmark,
+            OceanGeneratorDiagnostics.Counter.TREE_PREFLIGHT_FAILURES,
+            1L
+        );
+    }
+
     // -------------------------------------------------------------------------
     // Декорации биома
     // -------------------------------------------------------------------------
-
-    private static boolean nearTree(
-        WorldGenLevel level,
-        int x,
-        int y,
-        int z,
-        int radius
-    ) {
-        BlockPos.MutableBlockPos check = new BlockPos.MutableBlockPos();
-        for (int dx = -radius; dx <= radius; dx++) {
-            for (int dz = -radius; dz <= radius; dz++) {
-                if (dx * dx + dz * dz > radius * radius) continue;
-                check.set(x + dx, y, z + dz);
-                if (level.getBlockState(check).is(Blocks.OAK_WOOD)) return true;
-            }
-        }
-        return false;
-    }
 
     @Override
     public void applyBiomeDecoration(
@@ -1973,21 +2397,76 @@ public class OceanChunkGenerator extends ChunkGenerator {
             OceanGeneratorDiagnostics.Stage.DECORATION, cp.toLong(), seed
         );
         Throwable benchmarkError = null;
+        long decorCacheNs = 0L;
+        long volcanicBiomeNs = 0L;
+        long volcanicActiveNs = 0L;
+        long boulderNs = 0L;
+        long savannaTreeNs = 0L;
+        long smallFeatureNs = 0L;
+        int palmAttempts = 0;
+        int palmsPlaced = 0;
+        int shellsPlaced = 0;
+        int groundDecorationsPlaced = 0;
+        int shortGrassPlaced = 0;
+        int flowersPlaced = 0;
+        int bushesPlaced = 0;
+        int bushLeavesPlaced = 0;
         try {
 
-        // Живое подножие, геотермальные пятна и вулканический декор контролируются
-        // отдельными проходами и не смешиваются с декором саванны.
-        generateVolcanicBiomeFeatures(level, cx, cz);
-        generateVolcanicFeatures(level, cx, cz);
-        // Валуны кладём до мелкого декора: трава/цветы не полезут сквозь камень.
-        generateBoulders(level, cx, cz);
-        // Деревья генерируются отдельным детерминированным проходом: сначала рощи,
-        // затем мелкий ��екор заполняет оставшиеся свободные места.
-        generateSavannaTrees(level, cx, cz);
-
+        long phaseStarted = System.nanoTime();
         ColumnCache cache = DECOR_CACHE.remove(cp.toLong());
         diagnostics.cacheAccess(OceanGeneratorDiagnostics.Cache.DECOR, cache != null);
         diagnostics.cacheState(OceanGeneratorDiagnostics.Cache.DECOR, DECOR_CACHE.size(), DECOR_CACHE_MAX);
+        decorCacheNs = System.nanoTime() - phaseStarted;
+        diagnostics.phase(
+            benchmark,
+            OceanGeneratorDiagnostics.Phase.DECOR_READ_CACHE,
+            decorCacheNs
+        );
+
+        // Живое подножие, геотермальные пятна и вулканический декор контролируются
+        // отдельными проходами и не смешиваются с декором саванны.
+        phaseStarted = System.nanoTime();
+        generateVolcanicBiomeFeatures(level, cx, cz, cache, benchmark);
+        volcanicBiomeNs = System.nanoTime() - phaseStarted;
+        diagnostics.phase(
+            benchmark,
+            OceanGeneratorDiagnostics.Phase.DECOR_VOLCANIC_BIOME,
+            volcanicBiomeNs
+        );
+        phaseStarted = System.nanoTime();
+        generateVolcanicFeatures(level, cx, cz, cache, benchmark);
+        volcanicActiveNs = System.nanoTime() - phaseStarted;
+        diagnostics.phase(
+            benchmark,
+            OceanGeneratorDiagnostics.Phase.DECOR_VOLCANIC_ACTIVE,
+            volcanicActiveNs
+        );
+        // Валуны кладём до мелкого декора: трава/цветы не полезут сквозь камень.
+        phaseStarted = System.nanoTime();
+        generateBoulders(level, cx, cz, benchmark);
+        boulderNs = System.nanoTime() - phaseStarted;
+        diagnostics.phase(
+            benchmark,
+            OceanGeneratorDiagnostics.Phase.DECOR_BOULDERS,
+            boulderNs
+        );
+        // Деревья генерируются отдельным детерминированным проходом: сначала рощи,
+        // затем мелкий ��екор заполняет оставшиеся свободные места.
+        phaseStarted = System.nanoTime();
+        generateSavannaTrees(level, cx, cz, benchmark);
+        savannaTreeNs = System.nanoTime() - phaseStarted;
+        diagnostics.phase(
+            benchmark,
+            OceanGeneratorDiagnostics.Phase.DECOR_SAVANNA_TREES,
+            savannaTreeNs
+        );
+
+        long smallFeatureStarted = System.nanoTime();
+        double[] fallbackGrid = cache == null ? new double[8] : null;
+        BlockPos.MutableBlockPos surface = new BlockPos.MutableBlockPos();
+        BlockPos.MutableBlockPos above = new BlockPos.MutableBlockPos();
+        BlockPos.MutableBlockPos bushPos = new BlockPos.MutableBlockPos();
 
         for (int lx = 0; lx < 16; lx++) {
             for (int lz = 0; lz < 16; lz++) {
@@ -2005,48 +2484,50 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 } else {
                     double st = islandDist(wx, wz);
                     double spRaw = islandH(wx, wz, st);
-                    double[] gridSample = new double[8];
-                    gridIslandSample(wx, wz, gridSample);
-                    double gridH = gridSample[2];
+                    gridIslandSample(wx, wz, fallbackGrid);
+                    double gridH = fallbackGrid[2];
                     fl = computeFloor(wx, wz, st, spRaw, gridH);
                     isIsland = spRaw > 0.0 || gridH > 0.5;
-                    isVolcano = gridSample[3] > 0.5;
+                    isVolcano = fallbackGrid[3] > 0.5;
                 }
 
                 if (fl < seaLevel) continue;
                 if (!isIsland || isVolcano) continue;
 
-                BlockPos surface = new BlockPos(wx, fl, wz);
+                surface.set(wx, fl, wz);
+                above.set(wx, fl + 1, wz);
                 boolean onSand = level.getBlockState(surface).is(Blocks.SAND);
-                BiomeCategory biome = classifyBiome(wx, wz);
-                boolean stablePalmGround =
-                    Math.abs(floorAt(wx + 2, wz) - fl) <= 1 &&
-                    Math.abs(floorAt(wx - 2, wz) - fl) <= 1 &&
-                    Math.abs(floorAt(wx, wz + 2) - fl) <= 1 &&
-                    Math.abs(floorAt(wx, wz - 2) - fl) <= 1;
 
                 // Пляж классифицируется как BEACH, поэтому прежняя проверка TROPICS
                 // делала эту ветку недостижимой. Пальмы ставятся на ровном песке,
                 // а PalmGenerator дополнительно проверяет свободное место под крону.
                 if (
                     onSand &&
-                    biome == BiomeCategory.BEACH &&
-                    stablePalmGround &&
-                    level.getBlockState(surface.above()).isAir() &&
-                    hsh(wx * 41, wz * 43) < 0.0045
+                    hsh(wx * 41, wz * 43) < 0.0045 &&
+                    classifyBiome(wx, wz) == BiomeCategory.BEACH &&
+                    Math.abs(floorAt(wx + 2, wz) - fl) <= 1 &&
+                    Math.abs(floorAt(wx - 2, wz) - fl) <= 1 &&
+                    Math.abs(floorAt(wx, wz + 2) - fl) <= 1 &&
+                    Math.abs(floorAt(wx, wz - 2) - fl) <= 1 &&
+                    level.getBlockState(above).isAir()
                 ) {
-                    PalmGenerator.tryPlacePalm(
+                    palmAttempts++;
+                    PalmGenerator.PlacementResult result =
+                        PalmGenerator.tryPlacePalmDetailed(
                         level,
                         wx,
                         fl + 1,
                         wz,
                         hsh(wx * 53, wz * 59)
                     );
-                    continue;
+                    recordPalmPlacement(benchmark, result);
+                    if (result.placed()) {
+                        palmsPlaced++;
+                        continue;
+                    }
                 }
 
                 if (onSand && hsh(wx * 31, wz * 37) < 0.06) {
-                    BlockPos above = new BlockPos(wx, fl + 1, wz);
                     if (level.getBlockState(above).isAir()) {
                         ShellBlock.Variation v = SHELL_VARIATIONS[
                             (int) (hsh(wx * 79, wz * 83) * SHELL_VARIATIONS.length) %
@@ -2059,12 +2540,12 @@ public class OceanChunkGenerator extends ChunkGenerator {
                                 .setValue(ShellBlock.VARIANT, v),
                             2
                         );
+                        shellsPlaced++;
                     }
                     continue;
                 }
 
                 if (hsh(wx * 61, wz * 67) < 0.01) {
-                    BlockPos above = new BlockPos(wx, fl + 1, wz);
                     if (level.getBlockState(above).isAir()) {
                         GroundDecorationBlock.Type t = GROUND_DECORATION_TYPES[
                             (int) (hsh(wx * 89, wz * 91) * GROUND_DECORATION_TYPES.length) %
@@ -2077,6 +2558,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                                 .setValue(GroundDecorationBlock.VARIANT, t),
                             2
                         );
+                        groundDecorationsPlaced++;
                     }
                 }
 
@@ -2085,7 +2567,6 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 ) continue;
 
                 double r = hsh(wx * 17, wz * 29);
-                BlockPos above = new BlockPos(wx, fl + 1, wz);
 
                 if (r < 0.45) {
                     if (level.getBlockState(above).isAir()) {
@@ -2094,6 +2575,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                             Blocks.SHORT_GRASS.defaultBlockState(),
                             2
                         );
+                        shortGrassPlaced++;
                     }
                 } else if (r < 0.49) {
                     if (level.getBlockState(above).isAir()) {
@@ -2105,73 +2587,68 @@ public class OceanChunkGenerator extends ChunkGenerator {
                             Blocks.DANDELION.defaultBlockState();
                         else flower = Blocks.OXEYE_DAISY.defaultBlockState();
                         level.setBlock(above, flower, 2);
+                        flowersPlaced++;
                     }
                 } else if (r < 0.52) {
                     if (level.getBlockState(above).isAir()) {
                         BlockState leaf =
                             Blocks.JUNGLE_LEAVES.defaultBlockState();
                         double bushR = hsh(wx * 97, wz * 83);
-                        int[][] bush;
-                        if (bushR < 0.33) {
-                            bush = new int[][] {
-                                { 0, 0, 0 },
-                                { 1, 0, 0 },
-                                { -1, 0, 0 },
-                                { 0, 0, 1 },
-                                { 0, 0, -1 },
-                                { 1, 0, 1 },
-                                { -1, 0, -1 },
-                                { 0, 1, 0 },
-                                { 1, 1, 0 },
-                                { 0, 1, 1 },
-                            };
-                        } else if (bushR < 0.66) {
-                            bush = new int[][] {
-                                { 0, 0, 0 },
-                                { 1, 0, 0 },
-                                { -1, 0, 0 },
-                                { 0, 0, 1 },
-                                { 0, 0, -1 },
-                                { 1, 0, -1 },
-                                { -1, 0, 1 },
-                                { 0, 1, 0 },
-                                { -1, 1, 0 },
-                                { 0, 1, -1 },
-                                { 1, 1, 1 },
-                            };
-                        } else {
-                            bush = new int[][] {
-                                { 0, 0, 0 },
-                                { 2, 0, 0 },
-                                { -1, 0, 0 },
-                                { 0, 0, 1 },
-                                { 0, 0, -2 },
-                                { 1, 0, 1 },
-                                { -1, 0, -1 },
-                                { 0, 1, 0 },
-                                { 1, 1, 0 },
-                                { 0, 1, 1 },
-                                { -1, 1, 0 },
-                                { 0, 2, 0 },
-                            };
-                        }
-                        BlockPos.MutableBlockPos bp =
-                            new BlockPos.MutableBlockPos();
+                        int[][] bush = BUSH_TEMPLATES[
+                            bushR < 0.33 ? 0 : bushR < 0.66 ? 1 : 2
+                        ];
+                        int leavesPlaced = 0;
                         for (int[] b : bush) {
-                            bp.set(wx + b[0], fl + b[1], wz + b[2]);
-                            if (level.getBlockState(bp).isAir()) {
-                                level.setBlock(bp, leaf, 2);
+                            bushPos.set(wx + b[0], fl + b[1], wz + b[2]);
+                            if (level.getBlockState(bushPos).isAir()) {
+                                level.setBlock(bushPos, leaf, 2);
+                                leavesPlaced++;
                             }
                         }
+                        if (leavesPlaced > 0) bushesPlaced++;
+                        bushLeavesPlaced += leavesPlaced;
                     }
                 }
             }
         }
+        smallFeatureNs = System.nanoTime() - smallFeatureStarted;
+        diagnostics.phase(
+            benchmark,
+            OceanGeneratorDiagnostics.Phase.DECOR_SMALL_FEATURES,
+            smallFeatureNs
+        );
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.PALM_ATTEMPTS, palmAttempts);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.PALMS_PLACED, palmsPlaced);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.SHELLS_PLACED, shellsPlaced);
+        diagnostics.add(
+            benchmark,
+            OceanGeneratorDiagnostics.Counter.GROUND_DECORATIONS_PLACED,
+            groundDecorationsPlaced
+        );
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.SHORT_GRASS_PLACED, shortGrassPlaced);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.FLOWERS_PLACED, flowersPlaced);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.BUSHES_PLACED, bushesPlaced);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.BUSH_LEAVES_PLACED, bushLeavesPlaced);
         } catch (RuntimeException | Error error) {
             benchmarkError = error;
             throw error;
         } finally {
-            diagnostics.end(benchmark, seed, benchmarkError);
+            String detail = null;
+            if (
+                System.nanoTime() - benchmark.startedNs() >
+                    OceanGeneratorDiagnostics.Stage.DECORATION.budgetNs()
+            ) {
+                detail =
+                    "decorCacheMs=" + decorCacheNs / 1_000_000.0 +
+                    ",volcanicBiomeMs=" + volcanicBiomeNs / 1_000_000.0 +
+                    ",volcanicActiveMs=" + volcanicActiveNs / 1_000_000.0 +
+                    ",bouldersMs=" + boulderNs / 1_000_000.0 +
+                    ",savannaTreesMs=" + savannaTreeNs / 1_000_000.0 +
+                    ",smallFeaturesMs=" + smallFeatureNs / 1_000_000.0 +
+                    ",palms=" + palmsPlaced + '/' + palmAttempts +
+                    ",bushLeaves=" + bushLeavesPlaced;
+            }
+            diagnostics.end(benchmark, seed, benchmarkError, detail);
         }
     }
 
@@ -2182,66 +2659,94 @@ public class OceanChunkGenerator extends ChunkGenerator {
     private void generateVolcanicBiomeFeatures(
         WorldGenLevel level,
         int chunkX,
-        int chunkZ
+        int chunkZ,
+        ColumnCache cache,
+        OceanGeneratorDiagnostics.Token benchmark
     ) {
         int minX = chunkX * 16;
         int minZ = chunkZ * 16;
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         double[] sample = new double[8];
+        int palmAttempts = 0;
+        int palmsPlaced = 0;
+        int acaciaAttempts = 0;
+        int acaciasPlaced = 0;
+        int featureWrites = 0;
 
         for (int lx = 0; lx < 16; lx++) {
             for (int lz = 0; lz < 16; lz++) {
                 int x = minX + lx;
                 int z = minZ + lz;
+                int columnIndex = (lx << 4) | lz;
+                if (
+                    cache != null &&
+                    (cache.flags[columnIndex] & FLAG_VOLCANO) == 0
+                ) continue;
                 gridIslandSample(x, z, sample);
                 if (sample[3] < 0.5 || sample[4] > 0.5) continue;
 
                 double t = sample[0];
-                int floor = floorAt(x, z);
+                int floor = cache != null
+                    ? cache.floor[columnIndex]
+                    : floorAt(x, z);
                 if (floor < seaLevel) continue;
                 pos.set(x, floor, z);
                 BlockState ground = level.getBlockState(pos);
                 double grove = fbm(x * 0.010 + 307.0, z * 0.010 - 613.0, 3, 2.0, 0.52);
                 double groveEdge = fbm(x * 0.027 - 173.0, z * 0.027 + 419.0, 2, 2.0, 0.5);
                 double pick = hsh(x * 197 + floor, z * 199 - floor);
-                boolean stable =
-                    Math.abs(floorAt(x + 3, z) - floor) <= 2 &&
-                    Math.abs(floorAt(x - 3, z) - floor) <= 2 &&
-                    Math.abs(floorAt(x, z + 3) - floor) <= 2 &&
-                    Math.abs(floorAt(x, z - 3) - floor) <= 2;
-
-                // Пальмы только в редких защищённых бухтах и не у края обрыва.
-                if (
-                    t > 0.87 &&
-                    t < 0.94 &&
-                    grove > 0.61 &&
-                    stable &&
-                    (ground.is(Blocks.SAND) || ground.is(Blocks.GRASS_BLOCK)) &&
-                    pick < 0.0014
-                ) {
-                    PalmGenerator.tryPlacePalm(level, x, floor + 1, z, hsh(x * 211, z * 223));
-                    continue;
-                }
-
-                // Небольшие рощи только на самом внешнем зелёном обрамлении.
-                boolean inGrove = grove > 0.68 && groveEdge > 0.46;
-                if (
-                    t > 0.73 &&
-                    t < 0.86 &&
-                    inGrove &&
-                    stable &&
-                    pick < 0.0014 &&
-                    ground.is(Blocks.GRASS_BLOCK)
-                ) {
-                    AcaciaGenerator.tryPlace(
-                        level,
-                        x,
-                        floor + 1,
-                        z,
-                        hsh(x * 227, z * 229),
-                        false
-                    );
-                    continue;
+                if (pick < 0.0014) {
+                    boolean palmCandidate =
+                        t > 0.87 &&
+                        t < 0.94 &&
+                        grove > 0.61 &&
+                        (ground.is(Blocks.SAND) || ground.is(Blocks.GRASS_BLOCK));
+                    boolean acaciaCandidate =
+                        t > 0.73 &&
+                        t < 0.86 &&
+                        grove > 0.68 &&
+                        groveEdge > 0.46 &&
+                        ground.is(Blocks.GRASS_BLOCK);
+                    if (palmCandidate || acaciaCandidate) {
+                        boolean stable =
+                            Math.abs(floorAt(x + 3, z) - floor) <= 2 &&
+                            Math.abs(floorAt(x - 3, z) - floor) <= 2 &&
+                            Math.abs(floorAt(x, z + 3) - floor) <= 2 &&
+                            Math.abs(floorAt(x, z - 3) - floor) <= 2;
+                        if (stable && palmCandidate) {
+                            palmAttempts++;
+                            PalmGenerator.PlacementResult result =
+                                PalmGenerator.tryPlacePalmDetailed(
+                                level,
+                                x,
+                                floor + 1,
+                                z,
+                                hsh(x * 211, z * 223)
+                            );
+                            recordPalmPlacement(benchmark, result);
+                            if (result.placed()) {
+                                palmsPlaced++;
+                                continue;
+                            }
+                        }
+                        if (stable && acaciaCandidate) {
+                            acaciaAttempts++;
+                            AcaciaGenerator.PlacementResult result =
+                                AcaciaGenerator.tryPlaceDetailed(
+                                level,
+                                x,
+                                floor + 1,
+                                z,
+                                hsh(x * 227, z * 229),
+                                false
+                            );
+                            recordAcaciaPlacement(benchmark, result);
+                            if (result.placed()) {
+                                acaciasPlaced++;
+                                continue;
+                            }
+                        }
+                    }
                 }
 
                 pos.set(x, floor + 1, z);
@@ -2267,6 +2772,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                         deco = Blocks.OXEYE_DAISY.defaultBlockState();
                     }
                     level.setBlock(pos, deco, 2);
+                    featureWrites++;
                     continue;
                 }
 
@@ -2278,25 +2784,40 @@ public class OceanChunkGenerator extends ChunkGenerator {
                     pick < 0.06
                 ) {
                     level.setBlock(pos, Blocks.DEAD_BUSH.defaultBlockState(), 2);
+                    featureWrites++;
                 }
             }
         }
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.PALM_ATTEMPTS, palmAttempts);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.PALMS_PLACED, palmsPlaced);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.ACACIA_ATTEMPTS, acaciaAttempts);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.ACACIAS_PLACED, acaciasPlaced);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.VOLCANIC_FEATURE_WRITES, featureWrites);
     }
 
     private void generateVolcanicFeatures(
         WorldGenLevel level,
         int chunkX,
-        int chunkZ
+        int chunkZ,
+        ColumnCache cache,
+        OceanGeneratorDiagnostics.Token benchmark
     ) {
         int minX = chunkX * 16;
         int minZ = chunkZ * 16;
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         double[] sample = new double[8];
+        int[] nearestFlowIndexOut = new int[1];
+        int featureWrites = 0;
 
         for (int lx = 0; lx < 16; lx++) {
             for (int lz = 0; lz < 16; lz++) {
                 int wx = minX + lx;
                 int wz = minZ + lz;
+                int columnIndex = (lx << 4) | lz;
+                if (
+                    cache != null &&
+                    (cache.flags[columnIndex] & FLAG_VOLCANO) == 0
+                ) continue;
                 gridIslandSample(wx, wz, sample);
                 if (sample[3] < 0.5) continue;
 
@@ -2305,8 +2826,9 @@ public class OceanChunkGenerator extends ChunkGenerator {
                     (wx - sample[5]) * (wx - sample[5]) +
                     (wz - sample[6]) * (wz - sample[6])
                 ) / sample[1];
-                int floor = floorAt(wx, wz);
-                double angle = Math.atan2(wz - sample[6], wx - sample[5]);
+                int floor = cache != null
+                    ? cache.floor[columnIndex]
+                    : floorAt(wx, wz);
                 long volcanoHash = rawHash((int) sample[5] * 17, (int) sample[6] * 19);
                 int lavaLevel = (int) Math.round(sample[7]);
 
@@ -2336,6 +2858,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                                 : Blocks.OBSIDIAN.defaultBlockState(),
                             2
                         );
+                        featureWrites++;
                         // Верхний ярус: маленькая обсидиановая площадка,
                         // на которой стоит блок награды.
                         if (distance < platformRadius * 0.48) {
@@ -2349,6 +2872,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                                         : Blocks.OBSIDIAN.defaultBlockState()),
                                 2
                             );
+                            featureWrites++;
                         }
                         rewardIsland = true;
                         break;
@@ -2356,17 +2880,16 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 }
                 if (rewardIsland) continue;
 
-                double[] flowField = new double[2];
-                volcanicFlowField(
+                double flowDistance = volcanicFlowDistance(
                     wx,
                     wz,
                     t,
                     sample[5],
                     sample[6],
                     volcanoHash,
-                    flowField
+                    nearestFlowIndexOut
                 );
-                int nearestFlowIndex = (int) flowField[1];
+                int nearestFlowIndex = nearestFlowIndexOut[0];
                 // Активные языки текут от кромки до самого океана, как потоки
                 // Килауэа: раскалённое русло наверху, корка магмы на середине
                 // и полностью остывший чёрный камень у воды.
@@ -2378,10 +2901,10 @@ public class OceanChunkGenerator extends ChunkGenerator {
                     !isCalderaBarrier(craterT) &&
                     t > 0.25 &&
                     t < 0.985 &&
-                    flowField[0] < channelWidth;
+                    flowDistance < channelWidth;
                 if (inFlow) {
                     pos.set(wx, floor, wz);
-                    double edge = flowField[0] / channelWidth;
+                    double edge = flowDistance / channelWidth;
                     BlockState channel;
                     if (floor <= seaLevel + 1) {
                         // Вход лавы в океан: магмовые блоки у кромки воды дают
@@ -2399,6 +2922,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                         channel = Blocks.BLACKSTONE.defaultBlockState();
                     }
                     level.setBlock(pos, channel, 2);
+                    featureWrites++;
 
                     // Застывшие борта (леве): невысокий валик блэкстоуна вдоль
                     // краёв активного русла, как у настоящих лавовых каналов.
@@ -2416,6 +2940,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                                 Blocks.BLACKSTONE.defaultBlockState(),
                                 2
                             );
+                            featureWrites++;
                         }
                     }
                     continue;
@@ -2431,6 +2956,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 ) {
                     pos.set(wx, floor, wz);
                     level.setBlock(pos, Blocks.MAGMA_BLOCK.defaultBlockState(), 2);
+                    featureWrites++;
                     if (pick < 0.004) {
                         int chimney = 2 + (int) (hsh(wx * 233, wz * 239) * 2);
                         for (int dy = 1; dy <= chimney; dy++) {
@@ -2441,6 +2967,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                                     Blocks.BASALT.defaultBlockState(),
                                     2
                                 );
+                                featureWrites++;
                             }
                         }
                     }
@@ -2464,6 +2991,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                                 : Blocks.SMOOTH_BASALT.defaultBlockState(),
                             2
                         );
+                        featureWrites++;
                         if (hsh(wx * 257, wz * 263) < 0.3) {
                             pos.set(wx, floor + 2, wz);
                             if (level.getBlockState(pos).isAir()) {
@@ -2472,6 +3000,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                                     Blocks.BLACKSTONE.defaultBlockState(),
                                     2
                                 );
+                                featureWrites++;
                             }
                         }
                     }
@@ -2482,6 +3011,11 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 // силуэт формируют сам широкий конус и большие потоки.
             }
         }
+        diagnostics.add(
+            benchmark,
+            OceanGeneratorDiagnostics.Counter.VOLCANIC_FEATURE_WRITES,
+            featureWrites
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -2491,7 +3025,8 @@ public class OceanChunkGenerator extends ChunkGenerator {
     private void generateSavannaTrees(
         WorldGenLevel level,
         int chunkX,
-        int chunkZ
+        int chunkZ,
+        OceanGeneratorDiagnostics.Token benchmark
     ) {
         int minX = chunkX * 16,
             minZ = chunkZ * 16;
@@ -2502,6 +3037,8 @@ public class OceanChunkGenerator extends ChunkGenerator {
         int minCellZ = Math.floorDiv(minZ, SAVANNA_TREE_CELL);
         int maxCellZ = Math.floorDiv(maxZ, SAVANNA_TREE_CELL);
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        int attempts = 0;
+        int placed = 0;
 
         for (int cellX = minCellX; cellX <= maxCellX; cellX++) {
             for (int cellZ = minCellZ; cellZ <= maxCellZ; cellZ++) {
@@ -2522,13 +3059,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
                 int minFloor = floor,
                     maxFloor = floor;
-                int[][] slopeSamples = {
-                    { 3, 0 },
-                    { -3, 0 },
-                    { 0, 3 },
-                    { 0, -3 },
-                };
-                for (int[] sample : slopeSamples) {
+                for (int[] sample : SAVANNA_SLOPE_SAMPLES) {
                     int sampleFloor = floorAt(wx + sample[0], wz + sample[1]);
                     minFloor = Math.min(minFloor, sampleFloor);
                     maxFloor = Math.max(maxFloor, sampleFloor);
@@ -2562,7 +3093,9 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 if (frac(candidateHash >> 40) > density) continue;
 
                 boolean preferSmall = slope >= 2 || floor > seaLevel + 28;
-                AcaciaGenerator.tryPlace(
+                attempts++;
+                AcaciaGenerator.PlacementResult result =
+                    AcaciaGenerator.tryPlaceDetailed(
                     level,
                     wx,
                     floor + 1,
@@ -2570,8 +3103,12 @@ public class OceanChunkGenerator extends ChunkGenerator {
                     frac(candidateHash ^ seed),
                     preferSmall
                 );
+                recordAcaciaPlacement(benchmark, result);
+                if (result.placed()) placed++;
             }
         }
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.ACACIA_ATTEMPTS, attempts);
+        diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.ACACIAS_PLACED, placed);
     }
 
     // -------------------------------------------------------------------------
@@ -2602,7 +3139,12 @@ public class OceanChunkGenerator extends ChunkGenerator {
      * попадающую в этот чанк. Каждый чанк независимо рисует свою «дольку» валуна,
      * поэтому камни бесшовно проходят сквозь границы чанков без записи в соседей.
      */
-    private void generateBoulders(WorldGenLevel level, int chunkX, int chunkZ) {
+    private void generateBoulders(
+        WorldGenLevel level,
+        int chunkX,
+        int chunkZ,
+        OceanGeneratorDiagnostics.Token benchmark
+    ) {
         int minX = chunkX * 16,
             minZ = chunkZ * 16;
         int maxX = minX + 15,
@@ -2653,7 +3195,8 @@ public class OceanChunkGenerator extends ChunkGenerator {
                         minX,
                         minZ,
                         maxX,
-                        maxZ
+                        maxZ,
+                        benchmark
                     );
                 }
             }
@@ -2680,7 +3223,8 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 minX,
                 minZ,
                 maxX,
-                maxZ
+                maxZ,
+                benchmark
             );
         }
     }
@@ -2710,23 +3254,95 @@ public class OceanChunkGenerator extends ChunkGenerator {
         int minX,
         int minZ,
         int maxX,
-        int maxZ
+        int maxZ,
+        OceanGeneratorDiagnostics.Token benchmark
+    ) {
+        BoulderLayout layout = boulderLayout(ix, iz, radius, islandHash, benchmark);
+
+        // Каждый чанк получает тот же список и рисует только свою часть.
+        for (int i = 0; i < layout.count; i++) {
+            double rad = layout.radius[i];
+            if (
+                layout.x[i] + rad < minX ||
+                layout.x[i] - rad > maxX ||
+                layout.z[i] + rad < minZ ||
+                layout.z[i] - rad > maxZ
+            ) continue;
+            placeBoulder(
+                level,
+                layout.x[i],
+                layout.z[i],
+                rad,
+                layout.hash[i],
+                minX,
+                minZ,
+                maxX,
+                maxZ,
+                benchmark
+            );
+        }
+    }
+
+    private BoulderLayout boulderLayout(
+        int ix,
+        int iz,
+        double radius,
+        long islandHash
+    ) {
+        return boulderLayout(ix, iz, radius, islandHash, null);
+    }
+
+    private BoulderLayout boulderLayout(
+        int ix,
+        int iz,
+        double radius,
+        long islandHash,
+        OceanGeneratorDiagnostics.Token benchmark
+    ) {
+        long key = colKey(ix, iz);
+        BoulderLayout cached = BOULDER_CACHE.get(key);
+        diagnostics.cacheAccess(
+            OceanGeneratorDiagnostics.Cache.BOULDER,
+            cached != null
+        );
+        if (cached != null) return cached;
+
+        BoulderLayout created = createBoulderLayout(ix, iz, radius, islandHash);
+        BoulderLayout raced = BOULDER_CACHE.putIfAbsent(key, created);
+        BoulderLayout result = raced != null ? raced : created;
+        if (raced == null) diagnostics.add(
+            benchmark,
+            OceanGeneratorDiagnostics.Counter.BOULDER_LAYOUTS_BUILT,
+            1L
+        );
+        CacheTrimResult trim = trimCache(BOULDER_CACHE, BOULDER_CACHE_MAX);
+        if (trim.removed() > 0) diagnostics.cacheTrim(
+            OceanGeneratorDiagnostics.Cache.BOULDER,
+            trim.removed(),
+            trim.elapsedNs()
+        );
+        diagnostics.cacheState(
+            OceanGeneratorDiagnostics.Cache.BOULDER,
+            BOULDER_CACHE.size(),
+            BOULDER_CACHE_MAX
+        );
+        return result;
+    }
+
+    private BoulderLayout createBoulderLayout(
+        int ix,
+        int iz,
+        double radius,
+        long islandHash
     ) {
         int span = BOULDER_MAX_COUNT - BOULDER_MIN_COUNT + 1;
         int targetCount = BOULDER_MIN_COUNT + (int) (frac(islandHash) * span);
         double usableR = radius * (1.0 - BOULDER_EDGE_MARGIN);
-
-        // Важный момент: count означает число РЕАЛЬНЫХ валидных камней, а не число
-        // сырых кандидатов. Невалидные позиции заменяются следующей попытко��.
-        int[] acceptedX = new int[BOULDER_MAX_COUNT];
-        int[] acceptedZ = new int[BOULDER_MAX_COUNT];
-        double[] acceptedR = new double[BOULDER_MAX_COUNT];
-        long[] acceptedHash = new long[BOULDER_MAX_COUNT];
-        int accepted = 0;
+        BoulderLayout result = new BoulderLayout();
 
         for (
             int attempt = 0;
-            attempt < BOULDER_PLACEMENT_TRIES && accepted < targetCount;
+            attempt < BOULDER_PLACEMENT_TRIES && result.count < targetCount;
             attempt++
         ) {
             long bh = rawHash(
@@ -2746,10 +3362,11 @@ public class OceanChunkGenerator extends ChunkGenerator {
             if (!isValidBoulderSite(bx, bz, rad)) continue;
 
             boolean overlaps = false;
-            for (int i = 0; i < accepted; i++) {
-                double dx = bx - acceptedX[i],
-                    dz = bz - acceptedZ[i];
-                double minDistance = (rad + acceptedR[i]) * BOULDER_SEPARATION;
+            for (int i = 0; i < result.count; i++) {
+                double dx = bx - result.x[i];
+                double dz = bz - result.z[i];
+                double minDistance =
+                    (rad + result.radius[i]) * BOULDER_SEPARATION;
                 if (dx * dx + dz * dz < minDistance * minDistance) {
                     overlaps = true;
                     break;
@@ -2757,35 +3374,13 @@ public class OceanChunkGenerator extends ChunkGenerator {
             }
             if (overlaps) continue;
 
-            acceptedX[accepted] = bx;
-            acceptedZ[accepted] = bz;
-            acceptedR[accepted] = rad;
-            acceptedHash[accepted] = bh;
-            accepted++;
+            int index = result.count++;
+            result.x[index] = bx;
+            result.z[index] = bz;
+            result.radius[index] = rad;
+            result.hash[index] = bh;
         }
-
-        // Каждый чанк получает тот же список accepted и рисует только свою часть.
-        // Команда поиска должна использовать эти же валидные центры, а не сырые attempts.
-        for (int i = 0; i < accepted; i++) {
-            double rad = acceptedR[i];
-            if (
-                acceptedX[i] + rad < minX ||
-                acceptedX[i] - rad > maxX ||
-                acceptedZ[i] + rad < minZ ||
-                acceptedZ[i] - rad > maxZ
-            ) continue;
-            placeBoulder(
-                level,
-                acceptedX[i],
-                acceptedZ[i],
-                rad,
-                acceptedHash[i],
-                minX,
-                minZ,
-                maxX,
-                maxZ
-            );
-        }
+        return result;
     }
 
     /** Проверка позиции не зависит от состояния/порядка генерации чанков. */
@@ -2817,52 +3412,16 @@ public class OceanChunkGenerator extends ChunkGenerator {
      */
     public int[][] getSpawnBoulderPositions() {
         long islandHash = rawHash(0, 0);
-        int span = BOULDER_MAX_COUNT - BOULDER_MIN_COUNT + 1;
-        int targetCount = BOULDER_MIN_COUNT + (int) (frac(islandHash) * span);
-        double usableR = SPAWN_ISLAND_RADIUS * (1.0 - BOULDER_EDGE_MARGIN);
-
-        int[] acceptedX = new int[BOULDER_MAX_COUNT];
-        int[] acceptedZ = new int[BOULDER_MAX_COUNT];
-        double[] acceptedR = new double[BOULDER_MAX_COUNT];
-        int accepted = 0;
-
-        for (int attempt = 0; attempt < BOULDER_PLACEMENT_TRIES && accepted < targetCount; attempt++) {
-            long bh = rawHash(
-                (int) (islandHash + attempt * 9176L),
-                (int) ((islandHash >> 21) + attempt * 7919L)
-            );
-            double ang = frac(bh >> 8) * Math.PI * 2.0;
-            double dr = Math.sqrt(frac(bh >> 16)) * usableR;
-            int bx = (int) Math.round(Math.cos(ang) * dr);
-            int bz = (int) Math.round(Math.sin(ang) * dr);
-            double rad =
-                (BOULDER_MIN_RADIUS +
-                    frac(bh >> 24) * (BOULDER_MAX_RADIUS - BOULDER_MIN_RADIUS)) *
-                BOULDER_SIZE;
-
-            if (!isValidBoulderSite(bx, bz, rad)) continue;
-
-            boolean overlaps = false;
-            for (int i = 0; i < accepted; i++) {
-                double dx = bx - acceptedX[i], dz = bz - acceptedZ[i];
-                double minDistance = (rad + acceptedR[i]) * BOULDER_SEPARATION;
-                if (dx * dx + dz * dz < minDistance * minDistance) {
-                    overlaps = true;
-                    break;
-                }
-            }
-            if (overlaps) continue;
-
-            acceptedX[accepted] = bx;
-            acceptedZ[accepted] = bz;
-            acceptedR[accepted] = rad;
-            accepted++;
-        }
-
-        int[][] result = new int[accepted][2];
-        for (int i = 0; i < accepted; i++) {
-            result[i][0] = acceptedX[i];
-            result[i][1] = acceptedZ[i];
+        BoulderLayout layout = boulderLayout(
+            0,
+            0,
+            SPAWN_ISLAND_RADIUS,
+            islandHash
+        );
+        int[][] result = new int[layout.count][2];
+        for (int i = 0; i < layout.count; i++) {
+            result[i][0] = layout.x[i];
+            result[i][1] = layout.z[i];
         }
         return result;
     }
@@ -2882,7 +3441,8 @@ public class OceanChunkGenerator extends ChunkGenerator {
         int minX,
         int minZ,
         int maxX,
-        int maxZ
+        int maxZ,
+        OceanGeneratorDiagnostics.Token benchmark
     ) {
         int groundC = floorAt(bx, bz);
 
@@ -2908,8 +3468,21 @@ public class OceanChunkGenerator extends ChunkGenerator {
         BlockState ore = pickOre(bh);
         double nOff = frac(bh) * 1000.0; // индивидуальный сдвиг шума
         int ri = (int) Math.ceil(rad) + 1;
+        double sizeT = Mth.clamp(
+            (rad - BOULDER_MIN_RADIUS * BOULDER_SIZE) /
+                ((BOULDER_MAX_RADIUS - BOULDER_MIN_RADIUS) * BOULDER_SIZE),
+            0.0,
+            1.0
+        );
+        double oreFraction = Mth.lerp(
+            sizeT,
+            BOULDER_MIN_ORE_FRACTION,
+            BOULDER_MAX_ORE_FRACTION
+        );
 
         BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
+        int writtenBlocks = 0;
+        int writtenOreBlocks = 0;
 
         for (int dx = -ri; dx <= ri; dx++) {
             for (int dz = -ri; dz <= ri; dz++) {
@@ -2953,19 +3526,6 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
                     // Руды больше нет в фиксированном центре. Доля зависит от радиуса,
                     // поэтому общий объём добычи естественно растёт вместе с валуном.
-                    double sizeT = Mth.clamp(
-                        (rad - BOULDER_MIN_RADIUS * BOULDER_SIZE) /
-                            ((BOULDER_MAX_RADIUS - BOULDER_MIN_RADIUS) *
-                                BOULDER_SIZE),
-                        0.0,
-                        1.0
-                    );
-                    double oreFraction = Mth.lerp(
-                        sizeT,
-                        BOULDER_MIN_ORE_FRACTION,
-                        BOULDER_MAX_ORE_FRACTION
-                    );
-
                     // Крупный 3D-шум собир����ет равномерно доступную руду в прожилки по
                     // всему телу. Hash разбивает их края, сохраняя решение бесшовным.
                     double veinNoise = fbm(
@@ -2999,9 +3559,24 @@ public class OceanChunkGenerator extends ChunkGenerator {
                         cur.is(Blocks.STONE)
                     ) {
                         level.setBlock(p, block, 2);
+                        writtenBlocks++;
+                        if (oreBlock) writtenOreBlocks++;
                     }
                 }
             }
+        }
+        if (writtenBlocks > 0) {
+            diagnostics.add(benchmark, OceanGeneratorDiagnostics.Counter.BOULDER_FRAGMENTS, 1);
+            diagnostics.add(
+                benchmark,
+                OceanGeneratorDiagnostics.Counter.BOULDER_BLOCK_WRITES,
+                writtenBlocks
+            );
+            diagnostics.add(
+                benchmark,
+                OceanGeneratorDiagnostics.Counter.BOULDER_ORE_WRITES,
+                writtenOreBlocks
+            );
         }
     }
 
@@ -3010,7 +3585,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
     @Override
     public int getGenDepth() {
-        return 384;
+        return GEN_DEPTH;
     }
 
     @Override
@@ -3020,7 +3595,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
     @Override
     public int getMinY() {
-        return -64;
+        return GEN_MIN_Y;
     }
 
     @Override
@@ -3032,31 +3607,50 @@ public class OceanChunkGenerator extends ChunkGenerator {
         RandomState random
     ) {
         if (level instanceof WorldGenLevel wgl) syncSeedFromLevel(wgl);
-        long benchmarkKey = ChunkPos.asLong(Math.floorDiv(x, 16), Math.floorDiv(z, 16));
         OceanGeneratorDiagnostics.Token benchmark = diagnostics.begin(
-            OceanGeneratorDiagnostics.Stage.BASE_HEIGHT, benchmarkKey, seed
+            OceanGeneratorDiagnostics.Stage.BASE_HEIGHT, Long.MIN_VALUE, seed
         );
         Throwable benchmarkError = null;
         try {
         double st = islandDist(x, z);
         double spRaw = islandH(x, z, st);
-        double[] grid = new double[8];
+        double[] grid = GRID_SAMPLE_SCRATCH.get();
         gridIslandSample(x, z, grid);
-        int floor = computeFloor(x, z, st, spRaw, grid[2]);
+        double gridHeight = grid[2];
+        boolean crater = grid[4] > 0.5;
+        int lavaLevel = (int) Math.round(grid[7]);
+        int floor = computeFloor(x, z, st, spRaw, gridHeight);
         boolean oceanFloor =
             heightmapType == Heightmap.Types.OCEAN_FLOOR ||
             heightmapType == Heightmap.Types.OCEAN_FLOOR_WG;
-        if (oceanFloor) return floor + 1;
+        if (oceanFloor) {
+            boolean onIsland = spRaw > 0.0 || gridHeight > 0.5;
+            if (
+                floor < seaLevel &&
+                onIsland &&
+                (
+                    floor < floorAt(x - 1, z) ||
+                    floor < floorAt(x + 1, z) ||
+                    floor < floorAt(x, z - 1) ||
+                    floor < floorAt(x, z + 1)
+                )
+            ) return floor + 2;
+            return floor + 1;
+        }
 
         int surface = floor;
         if (floor < seaLevel) surface = seaLevel;
-        if (grid[4] > 0.5) surface = Math.max(surface, (int) Math.round(grid[7]));
+        if (crater) surface = Math.max(surface, lavaLevel);
         return surface + 1;
         } catch (RuntimeException | Error error) {
             benchmarkError = error;
             throw error;
         } finally {
-            diagnostics.end(benchmark, seed, benchmarkError);
+            String detail = System.nanoTime() - benchmark.startedNs() >
+                OceanGeneratorDiagnostics.Stage.BASE_HEIGHT.budgetNs()
+                ? "block=[" + x + ',' + z + "], heightmap=" + heightmapType
+                : null;
+            diagnostics.end(benchmark, seed, benchmarkError, detail);
         }
     }
 
@@ -3068,31 +3662,41 @@ public class OceanChunkGenerator extends ChunkGenerator {
         RandomState random
     ) {
         if (level instanceof WorldGenLevel wgl) syncSeedFromLevel(wgl);
-        long benchmarkKey = ChunkPos.asLong(Math.floorDiv(x, 16), Math.floorDiv(z, 16));
         OceanGeneratorDiagnostics.Token benchmark = diagnostics.begin(
-            OceanGeneratorDiagnostics.Stage.BASE_COLUMN, benchmarkKey, seed
+            OceanGeneratorDiagnostics.Stage.BASE_COLUMN, Long.MIN_VALUE, seed
         );
         Throwable benchmarkError = null;
         try {
         double st = islandDist(x, z);
         double spRaw = islandH(x, z, st);
-        double[] grid = new double[8];
+        double[] grid = GRID_SAMPLE_SCRATCH.get();
         gridIslandSample(x, z, grid);
         double gridDi = grid[0],
-            gridRi = grid[1],
             gridHi = grid[2];
         boolean volcano = grid[3] > 0.5;
         boolean crater = grid[4] > 0.5;
+        double volcanoCenterX = grid[5];
+        double volcanoCenterZ = grid[6];
         int lavaLevel = (int) Math.round(grid[7]);
         int fl = computeFloor(x, z, st, spRaw, gridHi);
         double maxT = 1.0 + SPAWN_ISLAND_FEATHER / SPAWN_ISLAND_RADIUS;
         boolean onIsl = spRaw > 0 || gridHi > 0.5;
+        int minNeighbor = fl;
+        boolean onSlope = false;
+        if (volcano || (fl < seaLevel && onIsl)) {
+            int west = floorAt(x - 1, z);
+            int east = floorAt(x + 1, z);
+            int north = floorAt(x, z - 1);
+            int south = floorAt(x, z + 1);
+            minNeighbor = Math.min(
+                Math.min(west, east),
+                Math.min(north, south)
+            );
+            onSlope = fl < west || fl < east || fl < north || fl < south;
+        }
+
         int dirtLayers;
         if (volcano) {
-            int minNeighbor = Math.min(
-                Math.min(floorAt(x - 1, z), floorAt(x + 1, z)),
-                Math.min(floorAt(x, z - 1), floorAt(x, z + 1))
-            );
             int cliffDrop = Math.max(0, fl - minNeighbor);
             dirtLayers = gridDi > 0.70
                 ? Math.max(3, Math.min(cliffDrop + 2, 8))
@@ -3107,74 +3711,79 @@ public class OceanChunkGenerator extends ChunkGenerator {
         double columnFissure = volcano && gridDi <= 0.70
             ? ridgeNoise(x * 0.055 + 811.0, z * 0.055 - 419.0, 2, 2.0, 0.5)
             : 0.0;
-        int skip = 0;
+        int strataShift = volcano && gridDi <= 0.70
+            ? (int) (hsh(x >> 4, z >> 4) * 5)
+            : 0;
+        BlockState surface = volcano
+            ? volcanicBiomeSurface(
+                x,
+                z,
+                fl,
+                gridDi,
+                crater,
+                lavaLevel,
+                volcanoCenterX,
+                volcanoCenterZ
+            )
+            : pickSurf(x, z, fl, st, gridHi, gridDi, beach);
+        boolean underwaterSlab = fl < seaLevel && onSlope && onIsl;
+        int underwaterPlant = 0;
+        if (fl < seaLevel && !underwaterSlab && hasGrass(x, z, fl)) {
+            underwaterPlant = hsh(x * 17, z * 23) < 0.3 ? 2 : 1;
+        }
         for (int y = minY; y < maxY; y++) {
-            if (skip > 0) {
-                col[y - minY] = Blocks.AIR.defaultBlockState();
-                skip--;
-                continue;
-            }
             if (y == minY) {
-                col[y - minY] = Blocks.BEDROCK.defaultBlockState();
+                col[y - minY] = BEDROCK_S;
             } else if (y < fl - dirtLayers) {
-                col[y - minY] = Blocks.STONE.defaultBlockState();
+                col[y - minY] = STONE_S;
             } else if (y < fl) {
                 BlockState sub;
                 if (volcano && gridDi <= 0.70) {
-                    int depth = fl - y;
-                    double rock = hsh(x * 43 + y, z * 47 - y);
-                    BlockState decoration;
-                    if (crater && fl <= lavaLevel + 1 && rock < 0.18) {
-                        decoration = Blocks.MAGMA_BLOCK.defaultBlockState();
-                    } else if (columnFissure > 0.91 && rock < 0.22) {
-                        decoration = Blocks.MAGMA_BLOCK.defaultBlockState();
-                    } else if (rock < 0.16) {
-                        decoration = Blocks.BLACKSTONE.defaultBlockState();
-                    } else if (rock < 0.34) {
-                        decoration = Blocks.SMOOTH_BASALT.defaultBlockState();
-                    } else if (gridDi > 0.58 && rock < 0.62) {
-                        decoration = Blocks.BLACKSTONE.defaultBlockState();
-                    } else {
-                        decoration = Blocks.BASALT.defaultBlockState();
-                    }
-                    double mix = hsh(x * 167 + depth * 13, z * 173 - depth * 17);
-                    sub = depth <= 2 && mix < (depth == 1 ? 0.68 : 0.34)
-                        ? decoration
-                        : Blocks.STONE.defaultBlockState();
+                    sub = volcanicSubsurface(
+                        x,
+                        y,
+                        z,
+                        gridDi,
+                        crater,
+                        lavaLevel,
+                        columnFissure,
+                        strataShift
+                    );
                 } else {
                     sub = volcano
-                        ? (hsh(x * 181, z * 191) < 0.52
-                            ? Blocks.BLACKSTONE.defaultBlockState()
+                        ? (hsh(x * 181, z * 191) < 0.72
+                            ? Blocks.DIRT.defaultBlockState()
                             : Blocks.BASALT.defaultBlockState())
                         : subSurf(x, z, fl, st, spRaw, gridHi, beach);
                 }
                 col[y - minY] =
                     sub != null ? sub : Blocks.STONE.defaultBlockState();
             } else if (y == fl) {
-                if (volcano) {
-                    col[y - minY] = volcanicBiomeSurface(
-                        x,
-                        z,
-                        fl,
-                        gridDi,
-                        crater,
-                        lavaLevel,
-                        grid[5],
-                        grid[6]
-                    );
-                } else {
-                    col[y - minY] = pickSurf(x, z, fl, st, gridHi, gridDi, beach);
-                }
+                col[y - minY] = surface;
             } else if (crater && y <= lavaLevel) {
                 col[y - minY] = Blocks.LAVA.defaultBlockState();
-            } else if (y == fl + 1) {
-                if (fl >= seaLevel) {
-                    col[y - minY] = Blocks.AIR.defaultBlockState();
-                } else {
-                    col[y - minY] = Blocks.WATER.defaultBlockState();
-                }
             } else if (y <= seaLevel && fl < seaLevel) {
-                col[y - minY] = Blocks.WATER.defaultBlockState();
+                if (y == fl + 1 && underwaterSlab) {
+                    col[y - minY] = slab(surface)
+                        .setValue(SlabBlock.TYPE, SlabType.BOTTOM)
+                        .setValue(SlabBlock.WATERLOGGED, true);
+                } else if (y == fl + 1 && underwaterPlant == 1) {
+                    col[y - minY] = Blocks.SEAGRASS.defaultBlockState();
+                } else if (y == fl + 1 && underwaterPlant == 2) {
+                    col[y - minY] = Blocks.TALL_SEAGRASS.defaultBlockState()
+                        .setValue(
+                            TallSeagrassBlock.HALF,
+                            net.minecraft.world.level.block.state.properties.DoubleBlockHalf.LOWER
+                        );
+                } else if (y == fl + 2 && underwaterPlant == 2) {
+                    col[y - minY] = Blocks.TALL_SEAGRASS.defaultBlockState()
+                        .setValue(
+                            TallSeagrassBlock.HALF,
+                            net.minecraft.world.level.block.state.properties.DoubleBlockHalf.UPPER
+                        );
+                } else {
+                    col[y - minY] = WATER_S;
+                }
             } else {
                 col[y - minY] = Blocks.AIR.defaultBlockState();
             }
@@ -3184,7 +3793,11 @@ public class OceanChunkGenerator extends ChunkGenerator {
             benchmarkError = error;
             throw error;
         } finally {
-            diagnostics.end(benchmark, seed, benchmarkError);
+            String detail = System.nanoTime() - benchmark.startedNs() >
+                OceanGeneratorDiagnostics.Stage.BASE_COLUMN.budgetNs()
+                ? "block=[" + x + ',' + z + ']'
+                : null;
+            diagnostics.end(benchmark, seed, benchmarkError, detail);
         }
     }
 
@@ -3207,10 +3820,23 @@ public class OceanChunkGenerator extends ChunkGenerator {
                     .executes(ctx -> benchmarkStatus(ctx.getSource()))
                     .then(Commands.literal("status").executes(ctx -> benchmarkStatus(ctx.getSource())))
                     .then(Commands.literal("report").executes(ctx -> benchmarkReport(ctx.getSource())))
+                    .then(Commands.literal("phases").executes(ctx -> benchmarkPhases(ctx.getSource())))
+                    .then(Commands.literal("terrain").executes(ctx -> benchmarkTerrain(ctx.getSource())))
+                    .then(Commands.literal("caches").executes(ctx -> benchmarkCaches(ctx.getSource())))
                     .then(Commands.literal("threads").executes(ctx -> benchmarkThreads(ctx.getSource())))
+                    .then(Commands.literal("runtime").executes(ctx -> benchmarkRuntime(ctx.getSource())))
+                    .then(Commands.literal("active").executes(ctx -> benchmarkActive(ctx.getSource())))
                     .then(Commands.literal("slow").executes(ctx -> benchmarkSlow(ctx.getSource())))
+                    .then(Commands.literal("diagnose").executes(ctx -> benchmarkDiagnose(ctx.getSource())))
+                    .then(Commands.literal("histograms").executes(ctx -> benchmarkHistograms(ctx.getSource())))
                     .then(Commands.literal("reset").executes(ctx -> benchmarkReset(ctx.getSource())))
                     .then(Commands.literal("export").executes(ctx -> benchmarkExport(ctx.getSource())))
+                    .then(Commands.literal("enabled")
+                        .then(Commands.argument("value", BoolArgumentType.bool())
+                            .executes(ctx -> benchmarkEnabled(
+                                ctx.getSource(), BoolArgumentType.getBool(ctx, "value")
+                            )))
+                    )
                     .then(Commands.literal("verbose")
                         .then(Commands.argument("enabled", BoolArgumentType.bool())
                             .executes(ctx -> benchmarkVerbose(
@@ -3295,6 +3921,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
     private static int benchmarkStatus(CommandSourceStack source) {
         OceanChunkGenerator generator = benchmarkGenerator(source);
         if (generator == null) return 0;
+        generator.updateDiagnosticCacheSizes();
         source.sendSuccess(() -> Component.literal(
             generator.diagnostics.compactStatus(generator.seed)
         ), false);
@@ -3304,11 +3931,40 @@ public class OceanChunkGenerator extends ChunkGenerator {
     private static int benchmarkReport(CommandSourceStack source) {
         OceanChunkGenerator generator = benchmarkGenerator(source);
         if (generator == null) return 0;
+        generator.updateDiagnosticCacheSizes();
         generator.diagnostics.forceReport(generator.seed);
         source.sendSuccess(() -> Component.literal(
             generator.diagnostics.compactStatus(generator.seed)
                 + " | полный отчёт записан в latest.log"
         ), false);
+        return 1;
+    }
+
+    private static int benchmarkPhases(CommandSourceStack source) {
+        OceanChunkGenerator generator = benchmarkGenerator(source);
+        if (generator == null) return 0;
+        String report = generator.diagnostics.phaseStatus();
+        log.info("\n{}", report);
+        source.sendSuccess(() -> Component.literal(report), false);
+        return 1;
+    }
+
+    private static int benchmarkTerrain(CommandSourceStack source) {
+        OceanChunkGenerator generator = benchmarkGenerator(source);
+        if (generator == null) return 0;
+        String report = generator.diagnostics.counterStatus();
+        log.info("\n{}", report);
+        source.sendSuccess(() -> Component.literal(report), false);
+        return 1;
+    }
+
+    private static int benchmarkCaches(CommandSourceStack source) {
+        OceanChunkGenerator generator = benchmarkGenerator(source);
+        if (generator == null) return 0;
+        generator.updateDiagnosticCacheSizes();
+        String report = generator.diagnostics.cacheStatus();
+        log.info("\n{}", report);
+        source.sendSuccess(() -> Component.literal(report), false);
         return 1;
     }
 
@@ -3321,12 +3977,51 @@ public class OceanChunkGenerator extends ChunkGenerator {
         return 1;
     }
 
+    private static int benchmarkRuntime(CommandSourceStack source) {
+        OceanChunkGenerator generator = benchmarkGenerator(source);
+        if (generator == null) return 0;
+        String report = generator.diagnostics.runtimeStatus();
+        log.info("\n{}", report);
+        source.sendSuccess(() -> Component.literal(report), false);
+        return 1;
+    }
+
+    private static int benchmarkActive(CommandSourceStack source) {
+        OceanChunkGenerator generator = benchmarkGenerator(source);
+        if (generator == null) return 0;
+        String report = generator.diagnostics.activeStatus();
+        log.info("\n{}", report);
+        source.sendSuccess(() -> Component.literal(report), false);
+        return 1;
+    }
+
     private static int benchmarkSlow(CommandSourceStack source) {
         OceanChunkGenerator generator = benchmarkGenerator(source);
         if (generator == null) return 0;
         String report = generator.diagnostics.slowStatus();
         log.info("\n{}", report);
         source.sendSuccess(() -> Component.literal(report), false);
+        return 1;
+    }
+
+    private static int benchmarkDiagnose(CommandSourceStack source) {
+        OceanChunkGenerator generator = benchmarkGenerator(source);
+        if (generator == null) return 0;
+        generator.updateDiagnosticCacheSizes();
+        String report = generator.diagnostics.diagnosis();
+        log.info("\n{}", report);
+        source.sendSuccess(() -> Component.literal(report), false);
+        return 1;
+    }
+
+    private static int benchmarkHistograms(CommandSourceStack source) {
+        OceanChunkGenerator generator = benchmarkGenerator(source);
+        if (generator == null) return 0;
+        String report = generator.diagnostics.histogramStatus();
+        log.info("\n{}", report);
+        source.sendSuccess(() -> Component.literal(
+            "OceanGen histograms записаны в latest.log"
+        ), false);
         return 1;
     }
 
@@ -3344,11 +4039,24 @@ public class OceanChunkGenerator extends ChunkGenerator {
     private static int benchmarkExport(CommandSourceStack source) {
         OceanChunkGenerator generator = benchmarkGenerator(source);
         if (generator == null) return 0;
-        generator.diagnostics.exportCsv(generator.seed);
-        source.sendSuccess(() -> Component.literal(
-            "CSV-совместимый snapshot записан в latest.log"
-        ), false);
-        return 1;
+        generator.updateDiagnosticCacheSizes();
+        try {
+            OceanGeneratorDiagnostics.ExportResult result = generator.diagnostics.export(
+                FMLPaths.GAMEDIR.get().resolve("logs").resolve("oceangen"),
+                generator.seed
+            );
+            source.sendSuccess(() -> Component.literal(
+                "OceanGen benchmark экспортирован:\n" +
+                result.reportPath() + "\n" + result.csvPath()
+            ), false);
+            return 1;
+        } catch (IOException error) {
+            log.error("Failed to export OceanGen benchmark", error);
+            source.sendFailure(Component.literal(
+                "Не удалось экспортировать benchmark: " + error.getMessage()
+            ));
+            return 0;
+        }
     }
 
     private static int benchmarkVerbose(CommandSourceStack source, boolean enabled) {
@@ -3358,6 +4066,22 @@ public class OceanChunkGenerator extends ChunkGenerator {
         source.sendSuccess(() -> Component.literal(
             "OceanGen verbose=" + enabled
         ), false);
+        return 1;
+    }
+
+    private static int benchmarkEnabled(CommandSourceStack source, boolean enabled) {
+        OceanChunkGenerator generator = benchmarkGenerator(source);
+        if (generator == null) return 0;
+        boolean changed = generator.diagnostics.enabled() != enabled;
+        generator.diagnostics.setEnabled(enabled);
+        if (enabled && changed) {
+            generator.diagnostics.reset();
+            generator.updateDiagnosticCacheSizes();
+        }
+        source.sendSuccess(() -> Component.literal(
+            "OceanGen benchmark enabled=" + enabled +
+            (enabled && changed ? "; начато новое окно" : "")
+        ), true);
         return 1;
     }
 

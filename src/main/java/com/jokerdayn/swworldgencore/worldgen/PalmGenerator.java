@@ -13,7 +13,6 @@ public final class PalmGenerator {
     private PalmGenerator() {}
 
     private static final BlockState PALM_BLOCK = Blocks.JUNGLE_WOOD.defaultBlockState();
-    private static BlockState PALM_LEAF = null;
 
     // хардкод координат из .nbt файлов
     // structure templates не работают из кастомного ChunkGenerator
@@ -141,32 +140,113 @@ public final class PalmGenerator {
     // пальма1 — прямая, пальма2 — наклонная, пальма3 — кривая
     private static final int[][][] ALL = {PALM1, PALM2, PALM3};
 
-    // размещение пальмы — только на песке
-    // seedMix используется для выбора варианта и поворота
+    // размещение пальмы — на песке или обычной почве
+    // seedMix используется для детерминированного выбора варианта
     // это даёт детерминированный результат для одной точки
-    public static void tryPlacePalm(WorldGenLevel level, int ax, int ay, int az, double seedMix) {
-        if (PALM_LEAF == null) {
-            PALM_LEAF = SWWorldgenCore.PALM_LEAF.get().defaultBlockState();
+    private static boolean isSoil(BlockState state) {
+        return state.is(Blocks.SAND) || state.is(Blocks.GRASS_BLOCK)
+            || state.is(Blocks.DIRT) || state.is(Blocks.COARSE_DIRT)
+            || state.is(Blocks.PODZOL);
+    }
+
+    private static boolean isReplaceable(BlockState state) {
+        return state.isAir() || state.is(SWWorldgenCore.PALM_SAPLING.get())
+            || state.is(Blocks.SHORT_GRASS) || state.is(Blocks.TALL_GRASS)
+            || state.is(Blocks.FERN) || state.is(Blocks.LARGE_FERN)
+            || state.is(Blocks.VINE) || state.is(Blocks.POPPY)
+            || state.is(Blocks.DANDELION) || state.is(Blocks.OXEYE_DAISY);
+    }
+
+    public record PlacementResult(
+        boolean placed,
+        long preflightNs,
+        long writeNs,
+        int blocksWritten
+    ) {}
+
+    public static PlacementResult tryPlacePalmDetailed(
+        WorldGenLevel level,
+        int ax,
+        int ay,
+        int az,
+        double seedMix
+    ) {
+        long preflightStarted = System.nanoTime();
+        BlockPos.MutableBlockPos mPos = new BlockPos.MutableBlockPos(ax, ay - 1, az);
+        if (!isSoil(level.getBlockState(mPos))) {
+            return new PlacementResult(
+                false,
+                System.nanoTime() - preflightStarted,
+                0L,
+                0
+            );
         }
-        BlockState below = level.getBlockState(new BlockPos(ax, ay - 1, az));
-        if (!below.is(Blocks.SAND)) return;
 
         long cs = Double.doubleToLongBits(seedMix)
                 ^ ((long) ax * 982451653L)
                 ^ ((long) az * 718364721L)
                 ^ ((long) ay * 123456789L);
         Random rng = new Random(cs);
+        int[][] blocks = ALL[rng.nextInt(ALL.length)];
+        BlockState palmLeaf = SWWorldgenCore.PALM_LEAF.get().defaultBlockState();
 
-        int v = rng.nextInt(3);
-        int[][] blocks = ALL[v];
+        for (int[] b : blocks) {
+            int x = ax + b[0];
+            int y = ay + b[1];
+            int z = az + b[2];
+            if (y < level.getMinBuildHeight() || y >= level.getMaxBuildHeight()) {
+                return new PlacementResult(
+                    false,
+                    System.nanoTime() - preflightStarted,
+                    0L,
+                    0
+                );
+            }
+            mPos.set(x, y, z);
+            if (!isReplaceable(level.getBlockState(mPos))) {
+                return new PlacementResult(
+                    false,
+                    System.nanoTime() - preflightStarted,
+                    0L,
+                    0
+                );
+            }
+            if (b[3] == 0 && b[1] == 0) {
+                mPos.set(x, y - 1, z);
+                if (!isSoil(level.getBlockState(mPos))) {
+                    return new PlacementResult(
+                        false,
+                        System.nanoTime() - preflightStarted,
+                        0L,
+                        0
+                    );
+                }
+            }
+        }
+        long preflightNs = System.nanoTime() - preflightStarted;
 
-        // Используем MutableBlockPos вместо new BlockPos в цикле
-        BlockPos.MutableBlockPos mPos = new BlockPos.MutableBlockPos();
+        long writeStarted = System.nanoTime();
         for (int[] b : blocks) {
             int dx = b[0], dy = b[1], dz = b[2], leaf = b[3];
-            BlockState st = leaf == 1 ? PALM_LEAF : PALM_BLOCK;
+            BlockState state = leaf == 1 ? palmLeaf : PALM_BLOCK;
             mPos.set(ax + dx, ay + dy, az + dz);
-            level.setBlock(mPos, st, 2);
+            level.setBlock(mPos, state, 2);
         }
+        return new PlacementResult(
+            true,
+            preflightNs,
+            System.nanoTime() - writeStarted,
+            blocks.length
+        );
+    }
+
+    public static boolean tryPlacePalm(
+        WorldGenLevel level,
+        int ax,
+        int ay,
+        int az,
+        double seedMix
+    ) {
+        return tryPlacePalmDetailed(level, ax, ay, az, seedMix).placed();
     }
 }

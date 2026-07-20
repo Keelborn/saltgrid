@@ -7,7 +7,6 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.BlockGetter;
-import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.SaplingBlock;
 import net.minecraft.world.level.block.grower.TreeGrower;
 import net.minecraft.world.level.block.state.BlockBehaviour;
@@ -39,7 +38,6 @@ public class PalmSaplingBlock extends SaplingBlock {
         if (state.getValue(STAGE) == 0) {
             level.setBlock(pos, state.cycle(STAGE), 4);
         } else {
-            level.setBlock(pos, Blocks.AIR.defaultBlockState(), 2);
             PalmGenerator.tryPlacePalm(level, pos.getX(), pos.getY(), pos.getZ(), random.nextDouble());
         }
     }

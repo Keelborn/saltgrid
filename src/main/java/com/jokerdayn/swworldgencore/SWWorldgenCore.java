@@ -80,7 +80,9 @@ public class SWWorldgenCore {
         event.register(Registries.BIOME_SOURCE,
             ResourceLocation.fromNamespaceAndPath(MODID, "ocean_biomes"),
             () -> OceanBiomeSource.CODEC);
-        LOGGER.info("Registered OceanChunkGenerator + OceanBiomeSource codecs");
+        if (event.getRegistryKey().equals(Registries.BIOME_SOURCE)) {
+            LOGGER.info("Registered OceanChunkGenerator + OceanBiomeSource codecs");
+        }
     }
 
     private void onBlockColor(RegisterColorHandlersEvent.Block event) {
@@ -129,7 +131,7 @@ public class SWWorldgenCore {
         CommandDispatcher<CommandSourceStack> dispatcher = event.getDispatcher();
         dispatcher.register(Commands.literal("island").executes(ctx -> {
             ServerPlayer player = ctx.getSource().getPlayerOrException();
-            int px = (int) player.getX(), pz = (int) player.getZ();
+            int px = player.getBlockX(), pz = player.getBlockZ();
 
             net.minecraft.server.level.ServerLevel serverLevel =
                     player.getServer().getLevel(player.level().dimension());
@@ -138,6 +140,7 @@ public class SWWorldgenCore {
 
             int[] island;
             if (gen instanceof OceanChunkGenerator oceanGen) {
+                oceanGen.syncSeedFromLevel(serverLevel);
                 island = oceanGen.findNearestIslandCenter(px, pz);
             } else {
                 ctx.getSource().sendSuccess(() -> Component.literal("Not an ocean world"), false);
@@ -166,15 +169,22 @@ public class SWWorldgenCore {
                 return 0;
             }
 
+            oceanGen.syncSeedFromLevel(serverLevel);
             int[][] positions = oceanGen.getSpawnBoulderPositions();
             int total = positions.length;
+            if (total == 0) {
+                ctx.getSource().sendFailure(Component.literal(
+                    "No valid boulders were generated on the spawn island"
+                ));
+                return 0;
+            }
 
             // Загрузить посещённые валуны из persistent data
             CompoundTag data = player.getPersistentData();
             CompoundTag visited = data.getCompound("swworldgencore:visited_boulders");
 
             // Найти ближайший непосещённый валун
-            int px = (int) player.getX(), pz = (int) player.getZ();
+            int px = player.getBlockX(), pz = player.getBlockZ();
             double bestDist = Double.MAX_VALUE;
             int bestIdx = -1;
             for (int i = 0; i < total; i++) {
@@ -188,11 +198,9 @@ public class SWWorldgenCore {
                 }
             }
 
-            int visitedCount = visited.getAllKeys().size();
-
             if (bestIdx == -1) {
                 // Все посещены — сбросить и начать заново
-                visited.getAllKeys().forEach(visited::remove);
+                visited = new CompoundTag();
                 data.put("swworldgencore:visited_boulders", visited);
                 ctx.getSource().sendSuccess(() ->
                     Component.literal("All " + total + " boulders visited! Reset. Teleporting to nearest..."), false);
@@ -209,17 +217,21 @@ public class SWWorldgenCore {
             }
 
             int bx = positions[bestIdx][0], bz = positions[bestIdx][1];
-            int surfaceY = gen.getBaseHeight(bx, bz,
-                    net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING,
-                    serverLevel, null) + 1;
+            serverLevel.getChunk(bx >> 4, bz >> 4);
+            int surfaceY = serverLevel.getHeight(
+                net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
+                bx,
+                bz
+            );
 
             // Пометить как посещённый
+            int visitedCount = visited.getAllKeys().size() + 1;
             visited.putBoolean(bx + "," + bz, true);
             data.put("swworldgencore:visited_boulders", visited);
 
             player.teleportTo(bx + 0.5, surfaceY, bz + 0.5);
             ctx.getSource().sendSuccess(() ->
-                Component.literal("Boulders on spawn: " + total + " | Visited: " + (visitedCount + 1) + "/" + total
+                Component.literal("Boulders on spawn: " + total + " | Visited: " + visitedCount + "/" + total
                     + " | Teleported to " + bx + " " + bz + " y=" + surfaceY), false);
             return 1;
         }));

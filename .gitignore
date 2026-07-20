@@ -47,7 +47,6 @@ crash-reports/
 docs/
 tools/
 net/
-biomofplanty/
 .gitignore
 
 ### Project specific ###
@@ -55,4 +54,4 @@ biomofplanty/
 IDEA.md
 node_modules/
 src_backup_c563a07/
-
+proj/

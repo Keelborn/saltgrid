@@ -125,67 +125,125 @@ public final class AcaciaGenerator {
     }
 
     private static final int[][] ANCHORS = {{4, 5}, {4, 4}, {6, 4}};
+    private static final int[][][][] ROTATED = buildRotatedTemplates();
 
-    public static boolean tryPlace(WorldGenLevel level, int ax, int ay, int az,
-                                   double seedMix, boolean preferSmall) {
+    public record PlacementResult(
+        boolean placed,
+        long preflightNs,
+        long writeNs,
+        int blocksWritten
+    ) {}
+
+    private static int[][][][] buildRotatedTemplates() {
+        int[][][][] rotated = new int[ALL.length][4][][];
+        for (int variant = 0; variant < ALL.length; variant++) {
+            int[][] source = ALL[variant];
+            int anchorX = ANCHORS[variant][0];
+            int anchorZ = ANCHORS[variant][1];
+            for (int turns = 0; turns < 4; turns++) {
+                int[][] blocks = new int[source.length][4];
+                for (int i = 0; i < source.length; i++) {
+                    int x = source[i][0] - anchorX;
+                    int z = source[i][2] - anchorZ;
+                    for (int turn = 0; turn < turns; turn++) {
+                        int oldX = x;
+                        x = -z;
+                        z = oldX;
+                    }
+                    blocks[i][0] = x;
+                    blocks[i][1] = source[i][1];
+                    blocks[i][2] = z;
+                    blocks[i][3] = source[i][3];
+                }
+                rotated[variant][turns] = blocks;
+            }
+        }
+        return rotated;
+    }
+
+    public static PlacementResult tryPlaceDetailed(
+        WorldGenLevel level,
+        int ax,
+        int ay,
+        int az,
+        double seedMix,
+        boolean preferSmall
+    ) {
+        long preflightStarted = System.nanoTime();
         long cs = Double.doubleToLongBits(seedMix)
                 ^ ((long) ax * 982451653L)
                 ^ ((long) az * 718364721L)
                 ^ ((long) ay * 123456789L);
         Random rng = new Random(cs);
         int variant = preferSmall ? 1 : rng.nextInt(ALL.length);
-        int[][] source = ALL[variant];
-        int anchorX = ANCHORS[variant][0];
-        int anchorZ = ANCHORS[variant][1];
-        int turns = rng.nextInt(4);
-        int[][] blocks = new int[source.length][4];
-
-        // Нормализуем шаблон относительно реального основания ствола и поворачиваем.
-        // Благодаря этому ax/az — точка посадки, а не случайный угол большого шаблона.
-        for (int i = 0; i < source.length; i++) {
-            int x = source[i][0] - anchorX;
-            int z = source[i][2] - anchorZ;
-            for (int turn = 0; turn < turns; turn++) {
-                int oldX = x;
-                x = -z;
-                z = oldX;
-            }
-            blocks[i][0] = x;
-            blocks[i][1] = source[i][1];
-            blocks[i][2] = z;
-            blocks[i][3] = source[i][3];
-        }
+        int[][] blocks = ROTATED[variant][rng.nextInt(4)];
 
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         for (int[] b : blocks) {
             int x = ax + b[0], y = ay + b[1], z = az + b[2];
             pos.set(x, y, z);
-            if (!isReplaceable(level.getBlockState(pos))) return false;
+            if (!isReplaceable(level.getBlockState(pos))) {
+                return new PlacementResult(
+                    false,
+                    System.nanoTime() - preflightStarted,
+                    0L,
+                    0
+                );
+            }
 
-            // Все части ствола на нулевом слое должны иметь реальную опору.
             if (b[3] == 1 && b[1] == 0) {
                 pos.set(x, y - 1, z);
-                if (!isSoil(level.getBlockState(pos))) return false;
+                if (!isSoil(level.getBlockState(pos))) {
+                    return new PlacementResult(
+                        false,
+                        System.nanoTime() - preflightStarted,
+                        0L,
+                        0
+                    );
+                }
             }
         }
+        long preflightNs = System.nanoTime() - preflightStarted;
 
-        // Запись начинается только после успешного preflight всего преобразованного дерева.
+        long writeStarted = System.nanoTime();
+        int blocksWritten = 0;
         for (int[] b : blocks) {
             pos.set(ax + b[0], ay + b[1], az + b[2]);
             level.setBlock(pos, b[3] == 1 ? WOOD : LEAF, 2);
+            blocksWritten++;
         }
 
+        BlockPos.MutableBlockPos neighbor = new BlockPos.MutableBlockPos();
         for (int[] b : blocks) {
             pos.set(ax + b[0], ay + b[1], az + b[2]);
             for (Direction dir : Direction.Plane.HORIZONTAL) {
                 if (rng.nextDouble() > 0.14) continue;
-                BlockPos neighbor = pos.relative(dir);
+                neighbor.set(
+                    pos.getX() + dir.getStepX(),
+                    pos.getY(),
+                    pos.getZ() + dir.getStepZ()
+                );
                 if (!level.getBlockState(neighbor).isAir()) continue;
                 BooleanProperty prop = VineBlock.getPropertyForFace(dir.getOpposite());
-                level.setBlock(neighbor, Blocks.VINE.defaultBlockState().setValue(prop, true), 2);
+                level.setBlock(
+                    neighbor,
+                    Blocks.VINE.defaultBlockState().setValue(prop, true),
+                    2
+                );
+                blocksWritten++;
             }
         }
-        return true;
+        return new PlacementResult(
+            true,
+            preflightNs,
+            System.nanoTime() - writeStarted,
+            blocksWritten
+        );
+    }
+
+    public static boolean tryPlace(WorldGenLevel level, int ax, int ay, int az,
+                                   double seedMix, boolean preferSmall) {
+        return tryPlaceDetailed(level, ax, ay, az, seedMix, preferSmall).placed();
     }
 
     public static boolean tryPlace(WorldGenLevel level, int ax, int ay, int az, double seedMix) {

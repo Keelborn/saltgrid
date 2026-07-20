@@ -8,7 +8,8 @@
       "deep_ocean": "swworldgencore:deep_ocean",
       "beach": "swworldgencore:beach",
       "tropics": "swworldgencore:tropics",
-      "savanna": "swworldgencore:savanna"
+      "savanna": "swworldgencore:savanna",
+      "volcano": "swworldgencore:volcano"
     },
     "seed": 0,
     "sea_level": 63
