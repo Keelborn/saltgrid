@@ -1,161 +1,32 @@
 package com.jokerdayn.swworldgencore.worldgen;
 
+import com.jokerdayn.swworldgencore.SWWorldgenCore;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.world.level.WorldGenLevel;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.RotatedPillarBlock;
 import net.minecraft.world.level.block.state.BlockState;
-import com.jokerdayn.swworldgencore.SWWorldgenCore;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Random;
 
+/**
+ * Deterministic procedural palm generator.
+ *
+ * <p>Every tree is assembled in memory first and written only after a complete
+ * collision check. The curved trunk, crown and fronds are generated from the
+ * world position and supplied seed, so chunk reloads always produce the same
+ * palm.</p>
+ */
 public final class PalmGenerator {
 
+    private static final BlockState TRUNK = Blocks.JUNGLE_WOOD.defaultBlockState();
+
     private PalmGenerator() {}
-
-    private static final BlockState PALM_BLOCK = Blocks.JUNGLE_WOOD.defaultBlockState();
-
-    // хардкод координат из .nbt файлов
-    // structure templates не работают из кастомного ChunkGenerator
-    // (getOrCreate() возвращает size={0,0,0})
-    // поэтому парсим через tools/read_nbt.py + extract_blocks.py
-    // это костыль, но работает
-    private static final int[][] PALM1 = {
-        {-11,9,-1,1},{-10,9,-2,1},{-10,9,-1,1},{-10,11,4,1},{-10,11,5,1},
-        {-9,10,-1,1},{-9,10,0,1},{-9,11,4,1},{-9,12,2,1},{-9,12,4,1},
-        {-8,10,-2,1},{-8,10,-1,1},{-8,11,-7,1},{-8,12,3,1},{-8,12,4,1},
-        {-8,12,5,1},{-8,13,2,1},{-7,10,-1,1},{-7,11,-8,1},{-7,11,-7,1},
-        {-7,11,-6,1},{-7,11,-1,1},{-7,11,0,1},{-7,13,-3,1},{-7,13,2,1},
-        {-7,13,3,1},{-7,13,4,1},{-6,11,-2,1},{-6,11,-1,1},{-6,12,-6,1},
-        {-6,12,-5,1},{-6,13,-4,1},{-6,13,-2,1},{-6,13,0,1},{-6,13,1,1},
-        {-6,13,2,1},{-5,9,6,1},{-5,11,-1,1},{-5,12,-6,1},{-5,12,0,1},
-        {-5,12,1,1},{-5,13,-4,1},{-5,13,-3,1},{-5,13,1,1},{-5,13,3,1},
-        {-4,8,-1,0},{-4,9,-1,0},{-4,9,5,1},{-4,9,6,1},{-4,9,7,1},
-        {-4,10,-5,1},{-4,10,-2,1},{-4,10,-1,1},{-4,10,0,1},{-4,10,4,1},
-        {-4,11,-3,1},{-4,11,-1,1},{-4,11,0,1},{-4,11,2,1},{-4,12,-2,1},
-        {-4,12,-1,1},{-4,12,0,1},{-4,13,-3,1},{-4,13,-2,1},{-4,13,1,1},
-        {-3,6,-1,0},{-3,7,-1,0},{-3,8,-1,0},{-3,8,0,0},{-3,9,-7,1},
-        {-3,9,-2,1},{-3,9,-1,0},{-3,9,0,1},{-3,9,5,1},{-3,9,7,1},
-        {-3,10,-6,1},{-3,10,-5,1},{-3,10,-4,1},{-3,10,-2,1},{-3,10,-1,0},
-        {-3,10,0,1},{-3,10,3,1},{-3,10,4,1},{-3,10,5,1},{-3,11,-4,1},
-        {-3,11,-3,1},{-3,11,-2,1},{-3,11,-1,1},{-3,11,0,1},{-3,11,1,1},
-        {-3,11,2,1},{-3,11,3,1},{-3,12,-1,1},{-3,13,-4,1},{-2,3,0,0},
-        {-2,4,0,0},{-2,5,0,0},{-2,6,0,0},{-2,9,-9,1},{-2,9,-8,1},
-        {-2,9,-7,1},{-2,9,-6,1},{-2,9,-1,0},{-2,10,-5,1},{-2,10,-2,1},
-        {-2,10,-1,1},{-2,10,0,1},{-2,10,5,1},{-2,11,-3,1},{-2,11,-1,1},
-        {-2,11,1,1},{-2,11,3,1},{-2,12,-2,1},{-2,12,-1,1},{-2,12,0,1},
-        {-2,13,-2,1},{-2,13,-1,1},{-2,13,2,1},{-1,0,0,0},{-1,1,0,0},
-        {-1,2,0,0},{-1,3,0,0},{-1,9,-8,1},{-1,9,-6,1},{-1,11,-2,1},
-        {-1,11,-1,1},{-1,12,0,1},{-1,12,1,1},{-1,13,-5,1},{-1,13,-3,1},
-        {-1,13,-2,1},{-1,13,1,1},{-1,13,2,1},{-1,13,4,1},{0,0,0,0},
-        {0,0,1,0},{0,1,0,0},{0,11,-1,1},{0,11,0,1},{0,13,-4,1},
-        {0,13,-3,1},{0,13,2,1},{0,13,3,1},{0,13,4,1},{0,13,5,1},
-        {1,10,-1,1},{1,10,0,1},{1,11,-2,1},{1,11,-1,1},{1,12,5,1},
-        {1,12,7,1},{1,13,-6,1},{1,13,-5,1},{1,13,-4,1},{1,13,-2,1},
-        {1,13,2,1},{1,13,4,1},{1,13,5,1},{2,10,0,1},{2,10,1,1},
-        {2,12,-5,1},{2,12,5,1},{2,12,6,1},{2,12,7,1},{2,13,-5,1},
-        {2,13,-4,1},{2,13,4,1},{3,9,0,1},{3,9,1,1},{3,10,-1,1},
-        {3,10,0,1},{3,12,-6,1},{3,12,-5,1},{3,12,6,1},{4,9,-1,1},
-        {4,9,0,1},{4,12,-5,1},{4,12,-4,1},{5,9,0,1},{5,9,1,1},
-    };
-
-    private static final int[][] PALM2 = {
-        {-12,8,-5,1},{-11,8,-6,1},{-11,8,-5,1},{-11,10,0,1},{-10,8,-5,1},
-        {-10,8,-4,1},{-10,10,0,1},{-10,10,1,1},{-9,8,-6,1},{-9,8,-5,1},
-        {-9,9,-4,1},{-9,10,0,1},{-9,11,-10,1},{-9,11,-2,1},{-9,11,-1,1},
-        {-9,12,-8,1},{-8,9,-5,1},{-8,9,-4,1},{-8,9,-3,1},{-8,11,-11,1},
-        {-8,11,-10,1},{-8,11,-9,1},{-8,11,-1,1},{-8,12,-9,1},{-8,12,-8,1},
-        {-8,12,-6,1},{-7,9,-4,1},{-7,10,-4,1},{-7,11,-11,1},{-7,12,-9,1},
-        {-7,12,-8,1},{-7,12,-7,1},{-7,12,-4,1},{-7,12,-2,1},{-7,12,-1,1},
-        {-6,10,-5,1},{-6,10,-4,1},{-6,10,-3,1},{-6,12,-7,1},{-6,12,-6,1},
-        {-6,12,-3,1},{-6,12,-2,1},{-6,12,0,1},{-5,7,4,1},{-5,8,-4,1},
-        {-5,8,3,1},{-5,9,-5,1},{-5,9,-4,1},{-5,9,-3,1},{-5,9,1,1},
-        {-5,10,-8,1},{-5,10,-6,1},{-5,10,-4,1},{-5,10,-1,1},{-5,11,-5,1},
-        {-5,11,-3,1},{-5,12,-8,1},{-5,12,-6,1},{-5,12,-5,1},{-5,12,-3,1},
-        {-5,12,-1,1},{-4,5,-4,0},{-4,6,-4,0},{-4,7,-5,0},{-4,7,-4,0},
-        {-4,7,-3,0},{-4,7,4,1},{-4,8,-11,1},{-4,8,-5,0},{-4,8,-4,0},
-        {-4,8,-3,0},{-4,8,3,1},{-4,8,4,1},{-4,9,-10,1},{-4,9,-8,1},
-        {-4,9,-5,1},{-4,9,-4,0},{-4,9,-3,1},{-4,9,0,1},{-4,9,1,1},
-        {-4,9,2,1},{-4,10,-8,1},{-4,10,-7,1},{-4,10,-6,1},{-4,10,-5,1},
-        {-4,10,-4,1},{-4,10,-3,1},{-4,10,-2,1},{-4,10,-1,1},{-4,10,0,1},
-        {-4,11,-5,1},{-4,11,-4,1},{-4,11,-3,1},{-4,12,-5,1},{-3,3,-3,0},
-        {-3,4,-3,0},{-3,5,-3,0},{-3,7,-4,0},{-3,8,-12,1},{-3,8,-11,1},
-        {-3,8,-10,1},{-3,8,-4,1},{-3,9,-10,1},{-3,9,-9,1},{-3,9,-8,1},
-        {-3,9,-5,1},{-3,9,-4,1},{-3,9,-3,1},{-3,9,2,1},{-3,10,-7,1},
-        {-3,10,-4,1},{-3,10,-3,1},{-3,10,0,1},{-3,11,-6,1},{-3,11,-5,1},
-        {-3,11,-3,1},{-3,11,-2,1},{-3,12,-1,1},{-2,2,-2,0},{-2,3,-2,0},
-        {-2,8,-12,1},{-2,8,-10,1},{-2,9,-9,1},{-2,10,-5,1},{-2,10,-4,1},
-        {-2,11,-6,1},{-2,11,-2,1},{-2,12,-6,1},{-2,12,-3,1},{-2,12,-2,1},
-        {-2,12,-1,1},{-1,0,-1,0},{-1,0,0,0},{-1,1,-1,0},{-1,2,-1,0},
-        {-1,10,-4,1},{-1,10,-3,1},{-1,11,2,1},{-1,12,-8,1},{-1,12,-7,1},
-        {-1,12,-6,1},{-1,12,-5,1},{-1,12,-1,1},{-1,12,0,1},{-1,12,1,1},
-        {0,0,-1,0},{0,0,0,0},{0,0,1,0},{0,1,0,0},{0,9,-4,1},{0,10,-5,1},
-        {0,10,-4,1},{0,11,1,1},{0,12,-7,1},{0,12,-2,1},{0,12,0,1},
-        {1,0,1,0},{1,9,-4,1},{1,9,-3,1},{1,10,2,1},{1,10,3,1},{1,11,1,1},
-        {1,11,2,1},{1,12,-9,1},{1,12,-8,1},{1,12,-7,1},{1,12,-6,1},{1,12,0,1},
-        {2,8,-4,1},{2,8,-3,1},{2,9,-5,1},{2,9,-4,1},{2,10,3,1},{2,11,-9,1},
-        {2,11,-8,1},{2,11,1,1},{2,12,-8,1},{2,12,-7,1},{3,8,-3,1},{3,8,-2,1},
-        {3,11,-10,1},{3,11,-9,1},{4,8,-4,1},{4,8,-3,1},{4,11,-9,1},{4,11,-8,1},
-    };
-
-    private static final int[][] PALM3 = {
-        {-11,9,-4,1},{-11,9,-3,1},{-10,9,-3,1},{-10,9,-2,1},{-10,12,1,1},
-        {-10,12,2,1},{-9,9,-4,1},{-9,9,-3,1},{-9,10,-3,1},{-9,10,-2,1},
-        {-9,12,-9,1},{-9,12,2,1},{-9,12,3,1},{-8,10,-4,1},{-8,10,-3,1},
-        {-8,12,-10,1},{-8,12,-9,1},{-8,12,-8,1},{-8,12,2,1},{-8,13,-7,1},
-        {-8,13,1,1},{-8,13,2,1},{-7,10,-3,1},{-7,10,-2,1},{-7,11,-2,1},
-        {-7,11,-1,1},{-7,12,-10,1},{-7,12,-8,1},{-7,13,-8,1},{-7,13,-7,1},
-        {-7,13,-5,1},{-7,13,-1,1},{-7,13,1,1},{-7,13,2,1},{-7,13,3,1},
-        {-6,11,-3,1},{-6,11,-2,1},{-6,13,-8,1},{-6,13,-7,1},{-6,13,-6,1},
-        {-6,13,-5,1},{-6,13,0,1},{-6,13,1,1},{-5,9,3,1},{-5,9,5,1},
-        {-5,11,-2,1},{-5,11,-1,1},{-5,12,-4,1},{-5,12,-3,1},{-5,13,-7,1},
-        {-5,13,-5,1},{-5,13,-4,1},{-5,13,-1,1},{-5,13,0,1},{-5,13,2,1},
-        {-4,8,-2,0},{-4,9,-2,0},{-4,9,3,1},{-4,9,4,1},{-4,9,5,1},
-        {-4,9,6,1},{-4,10,-8,1},{-4,10,-3,1},{-4,10,-2,1},{-4,10,-1,1},
-        {-4,10,2,1},{-4,11,-6,1},{-4,11,-4,1},{-4,11,-2,1},{-4,11,0,1},
-        {-4,12,-3,1},{-4,12,-2,1},{-4,12,-1,1},{-4,13,-5,1},{-4,13,-2,1},
-        {-4,13,-1,1},{-3,7,-2,0},{-3,8,-2,0},{-3,8,-1,0},{-3,9,-10,1},
-        {-3,9,-8,1},{-3,9,-3,1},{-3,9,-2,0},{-3,9,-1,1},{-3,9,4,1},
-        {-3,10,-8,1},{-3,10,-7,1},{-3,10,-6,1},{-3,10,-3,1},{-3,10,-2,0},
-        {-3,10,-1,1},{-3,10,1,1},{-3,10,2,1},{-3,10,3,1},{-3,11,-6,1},
-        {-3,11,-5,1},{-3,11,-4,1},{-3,11,-3,1},{-3,11,-2,1},{-3,11,-1,1},
-        {-3,11,0,1},{-3,11,1,1},{-3,12,-2,1},{-3,13,1,1},{-2,4,-2,0},
-        {-2,5,-2,0},{-2,6,-2,0},{-2,7,-2,0},{-2,9,-10,1},{-2,9,-9,1},
-        {-2,9,-8,1},{-2,9,-2,0},{-2,10,-7,1},{-2,10,-3,1},{-2,10,-2,1},
-        {-2,10,-1,1},{-2,10,2,1},{-2,11,-5,1},{-2,11,-3,1},{-2,11,-2,1},
-        {-2,11,0,1},{-2,12,-3,1},{-2,12,-2,1},{-2,12,-1,1},{-2,13,-4,1},
-        {-2,13,-1,1},{-2,13,0,1},{-1,2,-1,0},{-1,3,-1,0},{-1,4,-1,0},
-        {-1,9,-9,1},{-1,11,-2,1},{-1,12,-4,1},{-1,12,-3,1},{-1,12,3,1},
-        {-1,13,-6,1},{-1,13,-4,1},{-1,13,0,1},{-1,13,1,1},{0,0,-1,0},
-        {0,0,0,0},{0,1,-1,0},{0,1,0,0},{0,2,-1,0},{0,11,-2,1},{0,11,-1,1},
-        {0,12,2,1},{0,12,3,1},{0,13,-5,1},{0,13,-4,1},{0,13,-3,1},
-        {0,13,-1,1},{0,13,1,1},{1,0,0,0},{1,10,-2,1},{1,11,-3,1},
-        {1,11,-2,1},{1,11,3,1},{1,11,4,1},{1,11,5,1},{1,13,-7,1},
-        {1,13,-6,1},{1,13,-5,1},{1,13,0,1},{2,10,-2,1},{2,10,-1,1},
-        {2,11,4,1},{2,12,-8,1},{2,12,-7,1},{2,12,-6,1},{2,13,-5,1},
-        {3,10,-3,1},{3,10,-2,1},{3,11,-7,1},{3,12,-7,1},{3,12,-5,1},
-        {4,9,-2,1},{4,9,-1,1},{4,11,-8,1},{4,11,-7,1},{5,9,-2,1},
-    };
-
-    // все три варианта пальм — каждый с уникальной формой кроны
-    // пальма1 — прямая, пальма2 — наклонная, пальма3 — кривая
-    private static final int[][][] ALL = {PALM1, PALM2, PALM3};
-
-    // размещение пальмы — на песке или обычной почве
-    // seedMix используется для детерминированного выбора варианта
-    // это даёт детерминированный результат для одной точки
-    private static boolean isSoil(BlockState state) {
-        return state.is(Blocks.SAND) || state.is(Blocks.GRASS_BLOCK)
-            || state.is(Blocks.DIRT) || state.is(Blocks.COARSE_DIRT)
-            || state.is(Blocks.PODZOL);
-    }
-
-    private static boolean isReplaceable(BlockState state) {
-        return state.isAir() || state.is(SWWorldgenCore.PALM_SAPLING.get())
-            || state.is(Blocks.SHORT_GRASS) || state.is(Blocks.TALL_GRASS)
-            || state.is(Blocks.FERN) || state.is(Blocks.LARGE_FERN)
-            || state.is(Blocks.VINE) || state.is(Blocks.POPPY)
-            || state.is(Blocks.DANDELION) || state.is(Blocks.OXEYE_DAISY);
-    }
 
     public record PlacementResult(
         boolean placed,
@@ -164,89 +35,355 @@ public final class PalmGenerator {
         int blocksWritten
     ) {}
 
+    private record LocalPos(int x, int y, int z) {}
+
+    private record PlannedBlock(BlockState state, boolean trunk) {}
+
+    private enum Silhouette {
+        TALL(13, 17, 2.4, 4.4, 7, 9),
+        COASTAL(11, 15, 4.0, 6.2, 7, 10),
+        COMPACT(9, 13, 1.8, 3.4, 6, 8);
+
+        final int minHeight;
+        final int maxHeight;
+        final double minLean;
+        final double maxLean;
+        final int minFrondLength;
+        final int maxFrondLength;
+
+        Silhouette(
+            int minHeight,
+            int maxHeight,
+            double minLean,
+            double maxLean,
+            int minFrondLength,
+            int maxFrondLength
+        ) {
+            this.minHeight = minHeight;
+            this.maxHeight = maxHeight;
+            this.minLean = minLean;
+            this.maxLean = maxLean;
+            this.minFrondLength = minFrondLength;
+            this.maxFrondLength = maxFrondLength;
+        }
+    }
+
     public static PlacementResult tryPlacePalmDetailed(
         WorldGenLevel level,
-        int ax,
-        int ay,
-        int az,
+        int baseX,
+        int baseY,
+        int baseZ,
         double seedMix
     ) {
         long preflightStarted = System.nanoTime();
-        BlockPos.MutableBlockPos mPos = new BlockPos.MutableBlockPos(ax, ay - 1, az);
-        if (!isSoil(level.getBlockState(mPos))) {
-            return new PlacementResult(
-                false,
-                System.nanoTime() - preflightStarted,
-                0L,
-                0
-            );
+
+        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos(baseX, baseY - 1, baseZ);
+        if (!isSoil(level.getBlockState(cursor))) {
+            return failed(preflightStarted);
         }
 
-        long cs = Double.doubleToLongBits(seedMix)
-                ^ ((long) ax * 982451653L)
-                ^ ((long) az * 718364721L)
-                ^ ((long) ay * 123456789L);
-        Random rng = new Random(cs);
-        int[][] blocks = ALL[rng.nextInt(ALL.length)];
-        BlockState palmLeaf = SWWorldgenCore.PALM_LEAF.get().defaultBlockState();
+        Random random = new Random(treeSeed(baseX, baseY, baseZ, seedMix));
+        Map<LocalPos, PlannedBlock> plan = new LinkedHashMap<>();
+        buildPalm(plan, random);
 
-        for (int[] b : blocks) {
-            int x = ax + b[0];
-            int y = ay + b[1];
-            int z = az + b[2];
-            if (y < level.getMinBuildHeight() || y >= level.getMaxBuildHeight()) {
-                return new PlacementResult(
-                    false,
-                    System.nanoTime() - preflightStarted,
-                    0L,
-                    0
-                );
+        for (Map.Entry<LocalPos, PlannedBlock> entry : plan.entrySet()) {
+            LocalPos p = entry.getKey();
+            int worldY = baseY + p.y();
+            if (worldY < level.getMinBuildHeight() || worldY >= level.getMaxBuildHeight()) {
+                return failed(preflightStarted);
             }
-            mPos.set(x, y, z);
-            if (!isReplaceable(level.getBlockState(mPos))) {
-                return new PlacementResult(
-                    false,
-                    System.nanoTime() - preflightStarted,
-                    0L,
-                    0
-                );
-            }
-            if (b[3] == 0 && b[1] == 0) {
-                mPos.set(x, y - 1, z);
-                if (!isSoil(level.getBlockState(mPos))) {
-                    return new PlacementResult(
-                        false,
-                        System.nanoTime() - preflightStarted,
-                        0L,
-                        0
-                    );
-                }
+
+            cursor.set(baseX + p.x(), worldY, baseZ + p.z());
+            BlockState existing = level.getBlockState(cursor);
+            if (!isReplaceable(existing)) {
+                return failed(preflightStarted);
             }
         }
+
         long preflightNs = System.nanoTime() - preflightStarted;
-
         long writeStarted = System.nanoTime();
-        for (int[] b : blocks) {
-            int dx = b[0], dy = b[1], dz = b[2], leaf = b[3];
-            BlockState state = leaf == 1 ? palmLeaf : PALM_BLOCK;
-            mPos.set(ax + dx, ay + dy, az + dz);
-            level.setBlock(mPos, state, 2);
+        for (Map.Entry<LocalPos, PlannedBlock> entry : plan.entrySet()) {
+            LocalPos p = entry.getKey();
+            cursor.set(baseX + p.x(), baseY + p.y(), baseZ + p.z());
+            level.setBlock(cursor, entry.getValue().state(), 2);
         }
+
         return new PlacementResult(
             true,
             preflightNs,
             System.nanoTime() - writeStarted,
-            blocks.length
+            plan.size()
         );
     }
 
     public static boolean tryPlacePalm(
         WorldGenLevel level,
-        int ax,
-        int ay,
-        int az,
+        int baseX,
+        int baseY,
+        int baseZ,
         double seedMix
     ) {
-        return tryPlacePalmDetailed(level, ax, ay, az, seedMix).placed();
+        return tryPlacePalmDetailed(level, baseX, baseY, baseZ, seedMix).placed();
+    }
+
+    private static PlacementResult failed(long preflightStarted) {
+        return new PlacementResult(false, System.nanoTime() - preflightStarted, 0L, 0);
+    }
+
+    private static void buildPalm(Map<LocalPos, PlannedBlock> plan, Random random) {
+        Silhouette silhouette = pickSilhouette(random);
+        int height = between(random, silhouette.minHeight, silhouette.maxHeight);
+        double lean = between(random, silhouette.minLean, silhouette.maxLean);
+        double leanAngle = random.nextDouble() * Math.PI * 2.0;
+        double sideCurve = (random.nextDouble() - 0.5) * 2.2;
+        double curveSign = random.nextBoolean() ? 1.0 : -1.0;
+
+        List<LocalPos> spine = new ArrayList<>(height + 1);
+        LocalPos previous = null;
+        for (int y = 0; y <= height; y++) {
+            double t = y / (double) height;
+            double easedLean = Math.pow(t, 1.65) * lean;
+            double curved = Math.sin(t * Math.PI) * sideCurve * curveSign;
+            int x = (int) Math.round(
+                Math.cos(leanAngle) * easedLean + Math.cos(leanAngle + Math.PI / 2.0) * curved
+            );
+            int z = (int) Math.round(
+                Math.sin(leanAngle) * easedLean + Math.sin(leanAngle + Math.PI / 2.0) * curved
+            );
+            LocalPos current = new LocalPos(x, y, z);
+
+            if (previous != null && (previous.x() != x || previous.z() != z)) {
+                Direction.Axis bridgeAxis = axisFor(x - previous.x(), z - previous.z());
+                putTrunk(plan, previous.x(), y, previous.z(), bridgeAxis);
+            }
+            putTrunk(plan, x, y, z, Direction.Axis.Y);
+            spine.add(current);
+            previous = current;
+        }
+
+        addButtressRoots(plan, random, leanAngle);
+        LocalPos crown = spine.get(spine.size() - 1);
+        addCrown(plan, random, crown, silhouette, leanAngle);
+    }
+
+    private static Silhouette pickSilhouette(Random random) {
+        double roll = random.nextDouble();
+        if (roll < 0.46) return Silhouette.TALL;
+        if (roll < 0.78) return Silhouette.COASTAL;
+        return Silhouette.COMPACT;
+    }
+
+    private static void addButtressRoots(
+        Map<LocalPos, PlannedBlock> plan,
+        Random random,
+        double leanAngle
+    ) {
+        int roots = 3 + random.nextInt(2);
+        double start = leanAngle + Math.PI + random.nextDouble() * 0.7;
+        for (int i = 0; i < roots; i++) {
+            double angle = start + i * (Math.PI * 2.0 / roots) + random.nextGaussian() * 0.18;
+            int length = 1 + random.nextInt(2);
+            for (int step = 1; step <= length; step++) {
+                int x = (int) Math.round(Math.cos(angle) * step);
+                int z = (int) Math.round(Math.sin(angle) * step);
+                int y = step == 1 ? 0 : -1;
+                // Do not bury roots: the second segment is kept at ground level
+                // when the generated terrain cannot expose y=-1.
+                if (y < 0) y = 0;
+                putTrunk(plan, x, y, z, axisFor(x, z));
+            }
+        }
+    }
+
+    private static void addCrown(
+        Map<LocalPos, PlannedBlock> plan,
+        Random random,
+        LocalPos crown,
+        Silhouette silhouette,
+        double leanAngle
+    ) {
+        BlockState leaf = SWWorldgenCore.PALM_LEAF.get().defaultBlockState();
+
+        // Dense but irregular heart: it hides the meeting point of all fronds.
+        putLeaf(plan, leaf, crown.x(), crown.y() + 1, crown.z());
+        putLeaf(plan, leaf, crown.x() + 1, crown.y(), crown.z());
+        putLeaf(plan, leaf, crown.x() - 1, crown.y(), crown.z());
+        putLeaf(plan, leaf, crown.x(), crown.y(), crown.z() + 1);
+        putLeaf(plan, leaf, crown.x(), crown.y(), crown.z() - 1);
+
+        int frondCount = 8 + random.nextInt(4);
+        double startAngle = leanAngle + random.nextDouble() * 0.45;
+        for (int i = 0; i < frondCount; i++) {
+            double evenAngle = startAngle + i * Math.PI * 2.0 / frondCount;
+            double angle = evenAngle + random.nextGaussian() * 0.13;
+            int length = between(random, silhouette.minFrondLength, silhouette.maxFrondLength);
+            double lift = 1.35 + random.nextDouble() * 1.15;
+            double drop = 2.0 + random.nextDouble() * 2.2;
+            double sideways = random.nextGaussian() * 0.45;
+            addFrond(plan, leaf, random, crown, angle, length, lift, drop, sideways);
+        }
+
+        // A few shorter, lower fronds make the underside less perfectly radial.
+        int lowerFronds = 2 + random.nextInt(2);
+        for (int i = 0; i < lowerFronds; i++) {
+            double angle = startAngle + (i + 0.5) * Math.PI * 2.0 / lowerFronds
+                + random.nextGaussian() * 0.2;
+            int length = between(random, 4, 6);
+            addFrond(plan, leaf, random, crown, angle, length, 0.5, 3.2, 0.25);
+        }
+    }
+
+    private static void addFrond(
+        Map<LocalPos, PlannedBlock> plan,
+        BlockState leaf,
+        Random random,
+        LocalPos crown,
+        double angle,
+        int length,
+        double lift,
+        double drop,
+        double sideways
+    ) {
+        int previousX = crown.x();
+        int previousY = crown.y();
+        int previousZ = crown.z();
+
+        for (int step = 1; step <= length; step++) {
+            double t = step / (double) length;
+            double radius = step * (0.94 + 0.06 * Math.sin(t * Math.PI));
+            double lateral = Math.sin(t * Math.PI) * sideways;
+            int x = crown.x() + (int) Math.round(
+                Math.cos(angle) * radius + Math.cos(angle + Math.PI / 2.0) * lateral
+            );
+            int z = crown.z() + (int) Math.round(
+                Math.sin(angle) * radius + Math.sin(angle + Math.PI / 2.0) * lateral
+            );
+            int y = crown.y() + (int) Math.round(
+                lift * Math.sin(t * Math.PI) - drop * Math.pow(t, 2.15)
+            );
+
+            connectLeaves(plan, leaf, previousX, previousY, previousZ, x, y, z);
+            putLeaf(plan, leaf, x, y, z);
+
+            // Broad leaflets close to the crown, tapering to a clean tip.
+            if (step >= 2 && step < length - 1 && (step % 2 == 0 || random.nextDouble() < 0.32)) {
+                int px = (int) Math.round(Math.cos(angle + Math.PI / 2.0));
+                int pz = (int) Math.round(Math.sin(angle + Math.PI / 2.0));
+                putLeaf(plan, leaf, x + px, y, z + pz);
+                putLeaf(plan, leaf, x - px, y, z - pz);
+            }
+            if (step == length) {
+                putLeaf(plan, leaf, x, y - 1, z);
+            }
+
+            previousX = x;
+            previousY = y;
+            previousZ = z;
+        }
+    }
+
+    private static void connectLeaves(
+        Map<LocalPos, PlannedBlock> plan,
+        BlockState leaf,
+        int x0,
+        int y0,
+        int z0,
+        int x1,
+        int y1,
+        int z1
+    ) {
+        int dx = x1 - x0;
+        int dy = y1 - y0;
+        int dz = z1 - z0;
+        int steps = Math.max(Math.abs(dx), Math.max(Math.abs(dy), Math.abs(dz)));
+        for (int i = 1; i < steps; i++) {
+            double t = i / (double) steps;
+            putLeaf(
+                plan,
+                leaf,
+                x0 + (int) Math.round(dx * t),
+                y0 + (int) Math.round(dy * t),
+                z0 + (int) Math.round(dz * t)
+            );
+        }
+    }
+
+    private static void putTrunk(
+        Map<LocalPos, PlannedBlock> plan,
+        int x,
+        int y,
+        int z,
+        Direction.Axis axis
+    ) {
+        BlockState state = TRUNK;
+        if (state.hasProperty(RotatedPillarBlock.AXIS)) {
+            state = state.setValue(RotatedPillarBlock.AXIS, axis);
+        }
+        plan.put(new LocalPos(x, y, z), new PlannedBlock(state, true));
+    }
+
+    private static void putLeaf(
+        Map<LocalPos, PlannedBlock> plan,
+        BlockState state,
+        int x,
+        int y,
+        int z
+    ) {
+        plan.putIfAbsent(new LocalPos(x, y, z), new PlannedBlock(state, false));
+    }
+
+    private static Direction.Axis axisFor(int dx, int dz) {
+        return Math.abs(dx) >= Math.abs(dz) ? Direction.Axis.X : Direction.Axis.Z;
+    }
+
+    private static boolean isSoil(BlockState state) {
+        return state.is(Blocks.SAND)
+            || state.is(Blocks.RED_SAND)
+            || state.is(Blocks.GRASS_BLOCK)
+            || state.is(Blocks.DIRT)
+            || state.is(Blocks.COARSE_DIRT)
+            || state.is(Blocks.PODZOL)
+            || state.is(Blocks.ROOTED_DIRT)
+            || state.is(Blocks.MUD);
+    }
+
+    private static boolean isReplaceable(BlockState state) {
+        return state.isAir()
+            || state.is(SWWorldgenCore.PALM_SAPLING.get())
+            || state.is(SWWorldgenCore.PALM_LEAF.get())
+            || state.is(Blocks.SHORT_GRASS)
+            || state.is(Blocks.TALL_GRASS)
+            || state.is(Blocks.FERN)
+            || state.is(Blocks.LARGE_FERN)
+            || state.is(Blocks.VINE)
+            || state.is(Blocks.DEAD_BUSH)
+            || state.is(Blocks.POPPY)
+            || state.is(Blocks.DANDELION)
+            || state.is(Blocks.OXEYE_DAISY)
+            || state.is(Blocks.BLUE_ORCHID)
+            || state.is(Blocks.ALLIUM)
+            || state.is(Blocks.AZURE_BLUET);
+    }
+
+    private static int between(Random random, int min, int max) {
+        return min + random.nextInt(max - min + 1);
+    }
+
+    private static double between(Random random, double min, double max) {
+        return min + random.nextDouble() * (max - min);
+    }
+
+    private static long treeSeed(int x, int y, int z, double seedMix) {
+        long seed = Double.doubleToLongBits(seedMix);
+        seed ^= (long) x * 0x9E3779B97F4A7C15L;
+        seed ^= (long) y * 0xC2B2AE3D27D4EB4FL;
+        seed ^= (long) z * 0x165667B19E3779F9L;
+        return mix64(seed);
+    }
+
+    private static long mix64(long value) {
+        value = (value ^ (value >>> 30)) * 0xBF58476D1CE4E5B9L;
+        value = (value ^ (value >>> 27)) * 0x94D049BB133111EBL;
+        return value ^ (value >>> 31);
     }
 }
