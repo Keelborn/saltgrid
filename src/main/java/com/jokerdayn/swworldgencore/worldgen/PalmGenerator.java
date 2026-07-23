@@ -3,8 +3,10 @@ package com.jokerdayn.swworldgencore.worldgen;
 import com.jokerdayn.swworldgencore.SWWorldgenCore;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.WorldGenLevel;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.FarmBlock;
 import net.minecraft.world.level.block.RotatedPillarBlock;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -337,14 +339,9 @@ public final class PalmGenerator {
     }
 
     private static boolean isSoil(BlockState state) {
-        return state.is(Blocks.SAND)
-            || state.is(Blocks.RED_SAND)
-            || state.is(Blocks.GRASS_BLOCK)
-            || state.is(Blocks.DIRT)
-            || state.is(Blocks.COARSE_DIRT)
-            || state.is(Blocks.PODZOL)
-            || state.is(Blocks.ROOTED_DIRT)
-            || state.is(Blocks.MUD);
+        return state.is(BlockTags.SAND)
+            || state.is(BlockTags.DIRT)
+            || state.getBlock() instanceof FarmBlock;
     }
 
     private static boolean isReplaceable(BlockState state) {

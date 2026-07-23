@@ -31,6 +31,7 @@ import net.minecraft.world.level.WorldGenLevel;
 import net.minecraft.world.level.biome.BiomeManager;
 import net.minecraft.world.level.biome.BiomeSource;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.LeavesBlock;
 import net.minecraft.world.level.block.SlabBlock;
 import net.minecraft.world.level.block.TallSeagrassBlock;
 import net.minecraft.world.level.block.state.BlockState;
@@ -76,6 +77,12 @@ public class OceanChunkGenerator extends ChunkGenerator {
     private static final double SPAWN_ISLAND_RADIUS = 170.0;
     private static final double SPAWN_ISLAND_FEATHER = 120.0;
     private static final int SPAWN_ISLAND_MAX_HEIGHT = 18;
+    private static final int SPAWN_BEACH_SEARCH_DIRECTIONS = 128;
+    private static final int SPAWN_BEACH_SEARCH_OUTER_RADIUS = 520;
+    private static final int SPAWN_BEACH_SEARCH_INNER_RADIUS = 64;
+    private static final int SPAWN_BEACH_SEARCH_STEP = 4;
+    private static final int SPAWN_BEACH_MIN_INLAND_DEPTH = 8;
+    private static final int SPAWN_BEACH_TANGENT_HALF_WIDTH = 6;
 
     // =========================================================================
     // НАСТРОЙКИ ВАЛУНОВ  —  всё, что можно крутить, лежит здесь
@@ -469,7 +476,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                         (double) (centerZ - pz) * (centerZ - pz);
                     if (distanceSq >= bestDistanceSq) continue;
 
-                    // Точка чуть снаружи ��альдеры: вид на лавовое озеро без появления в лаве.
+                    // Точка чуть снаружи кальдеры: вид на лавовое озеро без появления в лаве.
                     double approachAngle = hsh(cellX * 131 + 7, cellZ * 137 - 11) * Math.PI * 2.0;
                     double approachRadius = radius * (VOLCANO_CRATER_RADIUS + 0.105);
                     int targetX = centerX + (int) Math.round(Math.cos(approachAngle) * approachRadius);
@@ -480,7 +487,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 }
             }
 
-            // С��едующее кольцо начинается как минимум в CELL блоках дальше.
+            // Следующее кольцо начинается как минимум в CELL блоках дальше.
             // После дополнительного кольца текущий лучший кандидат уже не может проиграть.
             if (best != null) {
                 double nextRingMin = minimumDistanceToUnsearchedCells(
@@ -1067,7 +1074,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
     }
 
     // -------------------------------------------------------------------------
-    // Выс��та колонки
+    // Высота колонки
     // -------------------------------------------------------------------------
 
     private int computeFloor(
@@ -1401,11 +1408,11 @@ public class OceanChunkGenerator extends ChunkGenerator {
     };
 
     /**
-     * Пляж = близ��сть к реальной воде. Сканируем 8 направлений: е  ли в пре  елах
-     * beachWidth есть колонка с fl < seaLevel — это пляж. Колонка у самой кромки
-     * всегда находит воду на расстоянии 1, поэтому песок гар��нтированно доходит
+     * Пляж = близость к реальной воде. Сканируем 8 направлений: если в пределах
+     * beachWidth есть колонка с fl &lt; seaLevel — это пляж. Колонка у самой кромки
+     * всегда находит воду на расстоянии 1, поэтому песок гарантированно доходит
      * до океана без разрывов. Высота используется только чтобы убрать песок
-     * с береговых обрывов (fl > seaLevel + 5).
+     * с береговых обрывов (fl &gt; seaLevel + 5).
      */
     private boolean isBeach(int x, int z, int fl) {
         if (fl < seaLevel || fl > seaLevel + 5) return false;
@@ -1472,8 +1479,249 @@ public class OceanChunkGenerator extends ChunkGenerator {
     }
 
     /**
+     * A generated, decoration-independent spawn target on the main island.
+     *
+     * <p>The returned position is the player's feet position. The caller must
+     * still load the chunk and verify that later decoration or player changes
+     * did not obstruct the two blocks above the sand.</p>
+     */
+    public record SpawnBeachPosition(BlockPos feet, int oceanDistance) {}
+
+    /**
+     * Finds a broad, mostly flat beach on the spawn island. The search begins
+     * in the ocean and walks inward, so inland ponds cannot be mistaken for
+     * the outer coast. {@code preferredOceanDistance} is clamped to 1..3.
+     *
+     * @return a predicted beach spawn, or {@code null} if no suitable coast
+     *         exists for this terrain seed
+     */
+    public SpawnBeachPosition findSpawnBeachPosition(
+        int preferredOceanDistance,
+        long searchSalt
+    ) {
+        int oceanDistance = Mth.clamp(preferredOceanDistance, 1, 3);
+        long mixedSalt = mixSpawnSalt(searchSalt ^ seed);
+        int firstDirection = Math.floorMod(
+            (int) (mixedSalt ^ (mixedSalt >>> 32)),
+            SPAWN_BEACH_SEARCH_DIRECTIONS
+        );
+        int directionStep = (mixedSalt & 1L) == 0L ? 1 : -1;
+
+        for (int attempt = 0; attempt < SPAWN_BEACH_SEARCH_DIRECTIONS; attempt++) {
+            int directionIndex = Math.floorMod(
+                firstDirection + attempt * directionStep,
+                SPAWN_BEACH_SEARCH_DIRECTIONS
+            );
+            double angle =
+                directionIndex * (Math.PI * 2.0 / SPAWN_BEACH_SEARCH_DIRECTIONS);
+            double outwardX = Math.cos(angle);
+            double outwardZ = Math.sin(angle);
+
+            int previousRadius = SPAWN_BEACH_SEARCH_OUTER_RADIUS;
+            int previousX = (int) Math.round(outwardX * previousRadius);
+            int previousZ = (int) Math.round(outwardZ * previousRadius);
+            if (floorAt(previousX, previousZ) >= seaLevel) continue;
+
+            for (
+                int radius = previousRadius - SPAWN_BEACH_SEARCH_STEP;
+                radius >= SPAWN_BEACH_SEARCH_INNER_RADIUS;
+                radius -= SPAWN_BEACH_SEARCH_STEP
+            ) {
+                int x = (int) Math.round(outwardX * radius);
+                int z = (int) Math.round(outwardZ * radius);
+                if (floorAt(x, z) < seaLevel) {
+                    previousRadius = radius;
+                    previousX = x;
+                    previousZ = z;
+                    continue;
+                }
+
+                int coastX = x;
+                int coastZ = z;
+                for (
+                    int fineRadius = previousRadius - 1;
+                    fineRadius >= radius;
+                    fineRadius--
+                ) {
+                    int fineX = (int) Math.round(outwardX * fineRadius);
+                    int fineZ = (int) Math.round(outwardZ * fineRadius);
+                    if (floorAt(fineX, fineZ) >= seaLevel) {
+                        coastX = fineX;
+                        coastZ = fineZ;
+                        break;
+                    }
+                    previousX = fineX;
+                    previousZ = fineZ;
+                }
+
+                int[] oceanDirection = adjacentOceanDirection(
+                    coastX,
+                    coastZ,
+                    outwardX,
+                    outwardZ,
+                    previousX,
+                    previousZ
+                );
+                if (oceanDirection == null) break;
+
+                int targetX =
+                    coastX - oceanDirection[0] * (oceanDistance - 1);
+                int targetZ =
+                    coastZ - oceanDirection[1] * (oceanDistance - 1);
+                if (
+                    nearestOceanDistance(targetX, targetZ, 3) != oceanDistance ||
+                    !isPredictedSpawnSand(targetX, targetZ) ||
+                    !isFlatSpawnColumn(targetX, targetZ)
+                ) {
+                    break;
+                }
+
+                SpawnBeachPosition candidate = new SpawnBeachPosition(
+                    new BlockPos(targetX, floorAt(targetX, targetZ) + 1, targetZ),
+                    oceanDistance
+                );
+                if (
+                    isBroadSpawnBeach(
+                        coastX,
+                        coastZ,
+                        oceanDirection[0],
+                        oceanDirection[1]
+                    )
+                ) {
+                    return candidate;
+                }
+                break;
+            }
+        }
+        return null;
+    }
+
+    private int[] adjacentOceanDirection(
+        int coastX,
+        int coastZ,
+        double expectedOutwardX,
+        double expectedOutwardZ,
+        int previousOceanX,
+        int previousOceanZ
+    ) {
+        int[] best = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (int[] direction : BEACH_DIRS) {
+            if (
+                floorAt(
+                    coastX + direction[0],
+                    coastZ + direction[1]
+                ) >= seaLevel
+            ) continue;
+
+            double score =
+                direction[0] * expectedOutwardX +
+                direction[1] * expectedOutwardZ;
+            if (
+                coastX + direction[0] == previousOceanX &&
+                coastZ + direction[1] == previousOceanZ
+            ) {
+                score += 0.25;
+            }
+            if (score > bestScore) {
+                bestScore = score;
+                best = direction;
+            }
+        }
+        return best;
+    }
+
+    private int nearestOceanDistance(int x, int z, int maxDistance) {
+        for (int distance = 1; distance <= maxDistance; distance++) {
+            for (int dx = -distance; dx <= distance; dx++) {
+                for (int dz = -distance; dz <= distance; dz++) {
+                    if (
+                        Math.max(Math.abs(dx), Math.abs(dz)) != distance
+                    ) continue;
+                    if (floorAt(x + dx, z + dz) < seaLevel) return distance;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private boolean isPredictedSpawnSand(int x, int z) {
+        int floor = floorAt(x, z);
+        if (floor < seaLevel || floor > seaLevel + 5) return false;
+        double spawnIslandDistance = islandDist(x, z);
+        double maxDistance =
+            1.0 + SPAWN_ISLAND_FEATHER / SPAWN_ISLAND_RADIUS;
+        return spawnIslandDistance < maxDistance && isBeach(x, z, floor);
+    }
+
+    private boolean isFlatSpawnColumn(int x, int z) {
+        int centerFloor = floorAt(x, z);
+        int landNeighbors = 0;
+        for (int i = 0; i < 4; i++) {
+            int[] direction = BEACH_DIRS[i];
+            int neighborFloor = floorAt(
+                x + direction[0],
+                z + direction[1]
+            );
+            if (neighborFloor < seaLevel) continue;
+            landNeighbors++;
+            if (Math.abs(neighborFloor - centerFloor) > 1) return false;
+        }
+        return landNeighbors >= 2;
+    }
+
+    private boolean isBroadSpawnBeach(
+        int coastX,
+        int coastZ,
+        int oceanDirectionX,
+        int oceanDirectionZ
+    ) {
+        int coastFloor = floorAt(coastX, coastZ);
+        int inlandDepth = 0;
+        for (int step = 0; step < SPAWN_BEACH_MIN_INLAND_DEPTH; step++) {
+            int x = coastX - oceanDirectionX * step;
+            int z = coastZ - oceanDirectionZ * step;
+            int floor = floorAt(x, z);
+            if (
+                !isPredictedSpawnSand(x, z) ||
+                Math.abs(floor - coastFloor) > 2
+            ) break;
+            inlandDepth++;
+        }
+        if (inlandDepth < SPAWN_BEACH_MIN_INLAND_DEPTH) return false;
+
+        int tangentX = -oceanDirectionZ;
+        int tangentZ = oceanDirectionX;
+        int tangentCenterX = coastX - oceanDirectionX * 2;
+        int tangentCenterZ = coastZ - oceanDirectionZ * 2;
+        int validTangentColumns = 0;
+        for (
+            int step = -SPAWN_BEACH_TANGENT_HALF_WIDTH;
+            step <= SPAWN_BEACH_TANGENT_HALF_WIDTH;
+            step++
+        ) {
+            int x = tangentCenterX + tangentX * step;
+            int z = tangentCenterZ + tangentZ * step;
+            int floor = floorAt(x, z);
+            if (
+                isPredictedSpawnSand(x, z) &&
+                Math.abs(floor - coastFloor) <= 2
+            ) {
+                validTangentColumns++;
+            }
+        }
+        return validTangentColumns >= SPAWN_BEACH_TANGENT_HALF_WIDTH * 2;
+    }
+
+    private static long mixSpawnSalt(long value) {
+        value = (value ^ (value >>> 30)) * 0xBF58476D1CE4E5B9L;
+        value = (value ^ (value >>> 27)) * 0x94D049BB133111EBL;
+        return value ^ (value >>> 31);
+    }
+
+    /**
      * Определяет, является ли позиция "проплешиной" (tropics) на острове.
-     * Генерирует МАКСИМУМ 2 центра проплешин на основе х��ша центра острова.
+     * Генерирует МАКСИМУМ 2 центра проплешин на основе хеша центра острова.
      * Проплешины большие: 35-60% от радиуса острова.
      */
     private boolean isIslandClearing(int x, int z) {
@@ -1484,7 +1732,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
         // Проверяем спавн-остров (отдельная система от grid)
         double st = islandDist(x, z);
         if (st <= 1.0) {
-            // На спавн-остров�� — центр в (0, 0), радиус SPAWN_ISLAND_RADIUS
+            // На спавн-острове — центр в (0, 0), радиус SPAWN_ISLAND_RADIUS
             ix = 0;
             iz = 0;
             radius = SPAWN_ISLAND_RADIUS;
@@ -2158,7 +2406,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                                 setDirect(chunk, lx, by, lz, skin);
                             }
                         } else {
-                            // На внешнем зелёном поясе вулкана под травой лежи��
+                            // На внешнем зелёном поясе вулкана под травой лежит
                             // тонкий плодородный слой на вулканическом базальте —
                             // молодая почва, наросшая на застывшей лаве.
                             BlockState sub = subsurfaceStates[columnIndex];
@@ -2452,7 +2700,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
             boulderNs
         );
         // Деревья генерируются отдельным детерминированным проходом: сначала рощи,
-        // затем мелкий ��екор заполняет оставшиеся свободные места.
+        // затем мелкий декор заполняет оставшиеся свободные места.
         phaseStarted = System.nanoTime();
         generateSavannaTrees(level, cx, cz, benchmark);
         savannaTreeNs = System.nanoTime() - phaseStarted;
@@ -2592,14 +2840,19 @@ public class OceanChunkGenerator extends ChunkGenerator {
                 } else if (r < 0.52) {
                     if (level.getBlockState(above).isAir()) {
                         BlockState leaf =
-                            Blocks.JUNGLE_LEAVES.defaultBlockState();
+                            Blocks.JUNGLE_LEAVES.defaultBlockState()
+                                .setValue(LeavesBlock.PERSISTENT, true);
                         double bushR = hsh(wx * 97, wz * 83);
                         int[][] bush = BUSH_TEMPLATES[
                             bushR < 0.33 ? 0 : bushR < 0.66 ? 1 : 2
                         ];
                         int leavesPlaced = 0;
                         for (int[] b : bush) {
-                            bushPos.set(wx + b[0], fl + b[1], wz + b[2]);
+                            bushPos.set(
+                                wx + b[0],
+                                fl + 1 + b[1],
+                                wz + b[2]
+                            );
                             if (level.getBlockState(bushPos).isAir()) {
                                 level.setBlock(bushPos, leaf, 2);
                                 leavesPlaced++;
@@ -3007,7 +3260,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
                     continue;
                 }
 
-                // Отдельны�� шпили и случайный огонь здесь намеренно не создаются:
+                // Отдельные шпили и случайный огонь здесь намеренно не создаются:
                 // силуэт формируют сам широкий конус и большие потоки.
             }
         }
@@ -3125,7 +3378,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
         return rawHash(x * 31 + y * 17, z * 13 - y * 7);
     }
 
-    /** Выбор типа руды для конкретного валуна: медь / желез�� / уголь. */
+    /** Выбор типа руды для конкретного валуна: медь / железо / уголь. */
     private BlockState pickOre(long boulderHash) {
         double f = frac(boulderHash >> 12);
         if (f < 0.34) return Blocks.COPPER_ORE.defaultBlockState();
@@ -3526,7 +3779,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
                     // Руды больше нет в фиксированном центре. Доля зависит от радиуса,
                     // поэтому общий объём добычи естественно растёт вместе с валуном.
-                    // Крупный 3D-шум собир����ет равномерно доступную руду в прожилки по
+                    // Крупный 3D-шум собирает равномерно доступную руду в прожилки по
                     // всему телу. Hash разбивает их края, сохраняя решение бесшовным.
                     double veinNoise = fbm(
                         wx * 0.24 + nOff + y * 0.07,
@@ -3549,7 +3802,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
 
                     p.set(wx, y, wz);
                     BlockState cur = level.getBlockState(p);
-                    // Пишем только по грунту/траве/пес��у/воздуху — не портим постройки и деревья.
+                    // Пишем только по грунту/траве/песку/воздуху — не портим постройки и деревья.
                     if (
                         cur.isAir() ||
                         cur.is(Blocks.GRASS_BLOCK) ||

@@ -9,8 +9,6 @@
   "swworldgencore.configuration.title": "SW: Worldgen Core Configs",
   "swworldgencore.configuration.section.swworldgencore.common.toml": "SW: Worldgen Core Configs",
   "swworldgencore.configuration.section.swworldgencore.common.toml.title": "SW: Worldgen Core Configs",
-  "swworldgencore.configuration.items": "Item List",
-  "swworldgencore.configuration.logDirtBlock": "Log Dirt Block",
-  "swworldgencore.configuration.magicNumberIntroduction": "Magic Number Text",
-  "swworldgencore.configuration.magicNumber": "Magic Number"
+  "swworldgencore.configuration.spawnNewPlayersInOcean": "Spawn new players in ocean world",
+  "swworldgencore.configuration.respawnInOcean": "Redirect respawns to ocean world"
 }
