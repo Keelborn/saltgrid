@@ -15,6 +15,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.ChunkGenerator;
@@ -86,6 +87,12 @@ public class SWWorldgenCore {
         () -> new PalmLeafBlock(BlockBehaviour.Properties.of().strength(0.2f).noOcclusion().randomTicks().sound(net.minecraft.world.level.block.SoundType.GRASS)));
     public static final DeferredHolder<Item, BlockItem> PALM_LEAF_ITEM = ITEMS.register("palm_leaf",
         () -> new BlockItem(PALM_LEAF.get(), new Item.Properties()));
+
+    public static final DeferredBlock<Block> BRONZE_ORE = BLOCKS.register("bronze_ore",
+        () -> new Block(BlockBehaviour.Properties.of().strength(3.0f, 3.0f).requiresCorrectToolForDrops().sound(net.minecraft.world.level.block.SoundType.STONE)));
+    public static final DeferredHolder<Item, BlockItem> BRONZE_ORE_ITEM = ITEMS.register("bronze_ore",
+        () -> new BlockItem(BRONZE_ORE.get(), new Item.Properties()));
+
     public static final DeferredHolder<CreativeModeTab, CreativeModeTab> MAIN_TAB =
         CREATIVE_TABS.register(
             "main",
@@ -97,6 +104,7 @@ public class SWWorldgenCore {
                     output.accept(GROUND_DECO_ITEM.get());
                     output.accept(PALM_SAPLING_ITEM.get());
                     output.accept(PALM_LEAF_ITEM.get());
+                    output.accept(BRONZE_ORE_ITEM.get());
                 })
                 .build()
         );
@@ -388,12 +396,10 @@ public class SWWorldgenCore {
                     return 0;
                 }
 
-                // Загрузить посещённые валуны из persistent data
                 CompoundTag data = player.getPersistentData();
                 CompoundTag visited =
                     data.getCompound(VISITED_BOULDERS_TAG);
 
-                // Найти ближайший непосещённый валун
                 int px = player.getBlockX();
                 int pz = player.getBlockZ();
                 double bestDist = Double.MAX_VALUE;
@@ -413,7 +419,6 @@ public class SWWorldgenCore {
                 }
 
                 if (bestIdx == -1) {
-                    // Все посещены — сбросить и начать заново
                     visited = new CompoundTag();
                     data.put(VISITED_BOULDERS_TAG, visited);
                     ctx.getSource().sendSuccess(
@@ -425,7 +430,6 @@ public class SWWorldgenCore {
                         false
                     );
 
-                    // Найти ближайший заново
                     bestDist = Double.MAX_VALUE;
                     for (int i = 0; i < total; i++) {
                         int bx = positions[i][0];
@@ -449,7 +453,6 @@ public class SWWorldgenCore {
                     bz
                 );
 
-                // Пометить как посещённый
                 int visitedCount = visited.getAllKeys().size() + 1;
                 visited.putBoolean(bx + "," + bz, true);
                 data.put(VISITED_BOULDERS_TAG, visited);

@@ -5,6 +5,7 @@
   "block.swworldgencore.ground_decoration": "Ground Decoration",
   "block.swworldgencore.palm_sapling": "Palm Sapling",
   "block.swworldgencore.palm_leaf": "Palm Leaves",
+  "block.swworldgencore.bronze_ore": "Bronze Ore",
 
   "swworldgencore.configuration.title": "SW: Worldgen Core Configs",
   "swworldgencore.configuration.section.swworldgencore.common.toml": "SW: Worldgen Core Configs",

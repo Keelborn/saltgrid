@@ -3378,12 +3378,9 @@ public class OceanChunkGenerator extends ChunkGenerator {
         return rawHash(x * 31 + y * 17, z * 13 - y * 7);
     }
 
-    /** Выбор типа руды для конкретного валуна: медь / железо / уголь. */
+    /** Выбор типа руды для конкретного валуна: всегда бронзовая руда. */
     private BlockState pickOre(long boulderHash) {
-        double f = frac(boulderHash >> 12);
-        if (f < 0.34) return Blocks.COPPER_ORE.defaultBlockState();
-        if (f < 0.67) return Blocks.IRON_ORE.defaultBlockState();
-        return Blocks.COAL_ORE.defaultBlockState();
+        return SWWorldgenCore.BRONZE_ORE.get().defaultBlockState();
     }
 
     /**
