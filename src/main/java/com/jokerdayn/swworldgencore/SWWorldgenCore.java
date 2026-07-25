@@ -95,6 +95,8 @@ public class SWWorldgenCore {
 
     public static final DeferredHolder<Item, Item> BRONZE_Q = ITEMS.register("bronze_q",
         () -> new Item(new Item.Properties()));
+    public static final DeferredHolder<Item, Item> BRONZE_INGOT = ITEMS.register("bronze_ingot",
+        () -> new Item(new Item.Properties()));
 
     public static final DeferredHolder<CreativeModeTab, CreativeModeTab> MAIN_TAB =
         CREATIVE_TABS.register(
@@ -109,6 +111,7 @@ public class SWWorldgenCore {
                     output.accept(PALM_LEAF_ITEM.get());
                     output.accept(BRONZE_ORE_ITEM.get());
                     output.accept(BRONZE_Q.get());
+                    output.accept(BRONZE_INGOT.get());
                 })
                 .build()
         );
