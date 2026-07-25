@@ -89,7 +89,7 @@ public class SWWorldgenCore {
         () -> new BlockItem(PALM_LEAF.get(), new Item.Properties()));
 
     public static final DeferredBlock<Block> BRONZE_ORE = BLOCKS.register("bronze_ore",
-        () -> new Block(BlockBehaviour.Properties.of().strength(3.0f, 3.0f).requiresCorrectToolForDrops().sound(net.minecraft.world.level.block.SoundType.STONE)));
+        () -> new Block(BlockBehaviour.Properties.of().strength(2.5f, 2.5f).requiresCorrectToolForDrops().sound(net.minecraft.world.level.block.SoundType.STONE)));
     public static final DeferredHolder<Item, BlockItem> BRONZE_ORE_ITEM = ITEMS.register("bronze_ore",
         () -> new BlockItem(BRONZE_ORE.get(), new Item.Properties()));
 
