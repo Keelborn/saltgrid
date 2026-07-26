@@ -99,6 +99,13 @@ public class OceanBiomeSource extends BiomeSource {
         return Stream.of(ocean, deepOcean, beach, tropics, savanna, volcano);
     }
 
+    /**
+     * Delegates to the generator's own classification so the biome shown matches the blocks
+     * that were actually written.
+     *
+     * <p>Before {@link #attachGenerator} has run — during world creation previews, for
+     * instance — there is nothing to ask, so the whole dimension reads as ocean.</p>
+     */
     @Override
     public Holder<Biome> getNoiseBiome(
         int quartX,
@@ -109,6 +116,7 @@ public class OceanBiomeSource extends BiomeSource {
         OceanChunkGenerator attachedGenerator = this.generator;
         if (attachedGenerator == null) return ocean;
 
+        // Sample the middle of the quart cell rather than its corner.
         int x = QuartPos.toBlock(quartX) + 2;
         int z = QuartPos.toBlock(quartZ) + 2;
         return switch (attachedGenerator.classifyBiome(x, z)) {
@@ -117,7 +125,7 @@ public class OceanBiomeSource extends BiomeSource {
             case TROPICS -> tropics;
             case SAVANNA -> savanna;
             case VOLCANO -> volcano;
-            default -> ocean;
+            case OCEAN -> ocean;
         };
     }
 }

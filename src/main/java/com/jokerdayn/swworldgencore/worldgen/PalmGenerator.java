@@ -1,6 +1,6 @@
 package com.jokerdayn.swworldgencore.worldgen;
 
-import com.jokerdayn.swworldgencore.SWWorldgenCore;
+import com.jokerdayn.swworldgencore.registry.ModBlocks;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.tags.BlockTags;
@@ -204,7 +204,7 @@ public final class PalmGenerator {
         Silhouette silhouette,
         double leanAngle
     ) {
-        BlockState leaf = SWWorldgenCore.PALM_LEAF.get().defaultBlockState();
+        BlockState leaf = ModBlocks.PALM_LEAF.get().defaultBlockState();
 
         // Dense but irregular heart: it hides the meeting point of all fronds.
         putLeaf(plan, leaf, crown.x(), crown.y() + 1, crown.z());
@@ -346,8 +346,8 @@ public final class PalmGenerator {
 
     private static boolean isReplaceable(BlockState state) {
         return state.isAir()
-            || state.is(SWWorldgenCore.PALM_SAPLING.get())
-            || state.is(SWWorldgenCore.PALM_LEAF.get())
+            || state.is(ModBlocks.PALM_SAPLING.get())
+            || state.is(ModBlocks.PALM_LEAF.get())
             || state.is(Blocks.SHORT_GRASS)
             || state.is(Blocks.TALL_GRASS)
             || state.is(Blocks.FERN)
