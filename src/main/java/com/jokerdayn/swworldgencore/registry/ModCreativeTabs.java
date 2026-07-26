@@ -25,6 +25,7 @@ public final class ModCreativeTabs {
                 output.accept(ModItems.GROUND_DECORATION.get());
                 output.accept(ModItems.PALM_SAPLING.get());
                 output.accept(ModItems.PALM_LEAF.get());
+                output.accept(ModItems.ROCK.get());
                 output.accept(ModItems.BRONZE_ORE.get());
                 output.accept(ModItems.BRONZE_RAW.get());
                 output.accept(ModItems.BRONZE_INGOT.get());

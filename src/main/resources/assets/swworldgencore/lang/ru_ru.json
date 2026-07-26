@@ -1,0 +1,17 @@
+{
+  "itemGroup.swworldgencore": "SW: Генерация мира",
+  "block.swworldgencore.shell": "Ракушка",
+  "block.swworldgencore.ground_decoration": "Мусор на земле",
+  "block.swworldgencore.palm_sapling": "Саженец пальмы",
+  "block.swworldgencore.palm_leaf": "Пальмовые листья",
+  "block.swworldgencore.bronze_ore": "Бронзовая руда",
+  "item.swworldgencore.rock": "Камень",
+  "item.swworldgencore.bronze_q": "Бронзовый самородок",
+  "item.swworldgencore.bronze_ingot": "Бронзовый слиток",
+  "swworldgencore.configuration.title": "SW: Генерация мира",
+  "swworldgencore.configuration.section.swworldgencore.common.toml": "SW: Генерация мира",
+  "swworldgencore.configuration.section.swworldgencore.common.toml.title": "SW: Генерация мира",
+  "swworldgencore.configuration.spawnNewPlayersInOcean": "Спавнить новых игроков в океане",
+  "swworldgencore.configuration.respawnInOcean": "Возрождать игроков в океане",
+  "swworldgencore.configuration.generatorBenchmark": "Собирать статистику генерации"
+}

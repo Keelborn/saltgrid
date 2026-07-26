@@ -1,9 +1,30 @@
 {
   "type": "minecraft:block",
+  "random_sequence": "swworldgencore:blocks/ground_decoration",
   "pools": [
     {
+      "rolls": 1.0,
       "bonus_rolls": 0.0,
       "conditions": [
+        {
+          "condition": "minecraft:any_of",
+          "terms": [
+            {
+              "condition": "minecraft:block_state_property",
+              "block": "swworldgencore:ground_decoration",
+              "properties": {
+                "variant": "rock_tiny"
+              }
+            },
+            {
+              "condition": "minecraft:block_state_property",
+              "block": "swworldgencore:ground_decoration",
+              "properties": {
+                "variant": "rock_small"
+              }
+            }
+          ]
+        },
         {
           "condition": "minecraft:survives_explosion"
         }
@@ -11,11 +32,165 @@
       "entries": [
         {
           "type": "minecraft:item",
-          "name": "swworldgencore:ground_decoration"
+          "name": "swworldgencore:rock"
+        }
+      ]
+    },
+    {
+      "rolls": 1.0,
+      "bonus_rolls": 0.0,
+      "conditions": [
+        {
+          "condition": "minecraft:block_state_property",
+          "block": "swworldgencore:ground_decoration",
+          "properties": {
+            "variant": "rock_medium"
+          }
+        },
+        {
+          "condition": "minecraft:survives_explosion"
         }
       ],
-      "rolls": 1.0
+      "entries": [
+        {
+          "type": "minecraft:item",
+          "name": "swworldgencore:rock",
+          "functions": [
+            {
+              "function": "minecraft:set_count",
+              "count": {
+                "type": "minecraft:uniform",
+                "min": 1.0,
+                "max": 2.0
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rolls": 1.0,
+      "bonus_rolls": 0.0,
+      "conditions": [
+        {
+          "condition": "minecraft:block_state_property",
+          "block": "swworldgencore:ground_decoration",
+          "properties": {
+            "variant": "rock_large"
+          }
+        },
+        {
+          "condition": "minecraft:survives_explosion"
+        }
+      ],
+      "entries": [
+        {
+          "type": "minecraft:item",
+          "name": "swworldgencore:rock",
+          "functions": [
+            {
+              "function": "minecraft:set_count",
+              "count": {
+                "type": "minecraft:uniform",
+                "min": 2.0,
+                "max": 3.0
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rolls": 1.0,
+      "bonus_rolls": 0.0,
+      "conditions": [
+        {
+          "condition": "minecraft:block_state_property",
+          "block": "swworldgencore:ground_decoration",
+          "properties": {
+            "variant": "rock_large"
+          }
+        },
+        {
+          "condition": "minecraft:random_chance",
+          "chance": 0.08
+        },
+        {
+          "condition": "minecraft:survives_explosion"
+        }
+      ],
+      "entries": [
+        {
+          "type": "minecraft:item",
+          "name": "minecraft:flint"
+        }
+      ]
+    },
+    {
+      "rolls": 1.0,
+      "bonus_rolls": 0.0,
+      "conditions": [
+        {
+          "condition": "minecraft:any_of",
+          "terms": [
+            {
+              "condition": "minecraft:block_state_property",
+              "block": "swworldgencore:ground_decoration",
+              "properties": {
+                "variant": "stick_small"
+              }
+            },
+            {
+              "condition": "minecraft:block_state_property",
+              "block": "swworldgencore:ground_decoration",
+              "properties": {
+                "variant": "stick_medium"
+              }
+            }
+          ]
+        },
+        {
+          "condition": "minecraft:survives_explosion"
+        }
+      ],
+      "entries": [
+        {
+          "type": "minecraft:item",
+          "name": "minecraft:stick"
+        }
+      ]
+    },
+    {
+      "rolls": 1.0,
+      "bonus_rolls": 0.0,
+      "conditions": [
+        {
+          "condition": "minecraft:block_state_property",
+          "block": "swworldgencore:ground_decoration",
+          "properties": {
+            "variant": "stick_large"
+          }
+        },
+        {
+          "condition": "minecraft:survives_explosion"
+        }
+      ],
+      "entries": [
+        {
+          "type": "minecraft:item",
+          "name": "minecraft:stick",
+          "functions": [
+            {
+              "function": "minecraft:set_count",
+              "count": {
+                "type": "minecraft:uniform",
+                "min": 1.0,
+                "max": 2.0
+              }
+            }
+          ]
+        }
+      ]
     }
-  ],
-  "random_sequence": "swworldgencore:blocks/ground_decoration"
+  ]
 }
