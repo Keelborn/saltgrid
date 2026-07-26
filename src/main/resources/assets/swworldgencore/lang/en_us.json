@@ -1,6 +1,5 @@
 {
   "itemGroup.swworldgencore": "SW Worldgen",
-
   "block.swworldgencore.shell": "Seashell",
   "block.swworldgencore.ground_decoration": "Ground Decoration",
   "block.swworldgencore.palm_sapling": "Palm Sapling",
@@ -8,10 +7,10 @@
   "block.swworldgencore.bronze_ore": "Bronze Ore",
   "item.swworldgencore.bronze_q": "Raw Bronze",
   "item.swworldgencore.bronze_ingot": "Bronze Ingot",
-
   "swworldgencore.configuration.title": "SW: Worldgen Core Configs",
   "swworldgencore.configuration.section.swworldgencore.common.toml": "SW: Worldgen Core Configs",
   "swworldgencore.configuration.section.swworldgencore.common.toml.title": "SW: Worldgen Core Configs",
   "swworldgencore.configuration.spawnNewPlayersInOcean": "Spawn new players in ocean world",
-  "swworldgencore.configuration.respawnInOcean": "Redirect respawns to ocean world"
+  "swworldgencore.configuration.respawnInOcean": "Redirect respawns to ocean world",
+  "swworldgencore.configuration.generatorBenchmark": "Collect worldgen benchmark statistics"
 }

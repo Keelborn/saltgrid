@@ -185,6 +185,7 @@ publishing {
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8' // Use the UTF-8 charset for Java compilation
+    options.compilerArgs << '-Xlint:all,-serial,-processing,-this-escape'
 }
 
 sourceSets {
@@ -214,4 +215,24 @@ idea {
         downloadSources = true
         downloadJavadoc = true
     }
+}
+
+tasks.register('terrainDigestTest', JavaExec) {
+    group = 'verification'
+    description = 'Fails if generated terrain output changed (golden digest over 3 seeds).'
+    classpath = sourceSets.spawnSmoke.runtimeClasspath
+    mainClass = 'com.jokerdayn.swworldgencore.worldgen.OceanTerrainDigestTest'
+    dependsOn spawnSmokeClasses
+    def digestWorkDir = layout.buildDirectory.dir('terrain-digest')
+    workingDir digestWorkDir
+    doFirst {
+        digestWorkDir.get().asFile.mkdirs()
+    }
+}
+
+// Both headless checks in one place.
+tasks.register('worldgenChecks') {
+    group = 'verification'
+    description = 'Runs the spawn-search smoke test and the terrain digest regression guard.'
+    dependsOn 'spawnSearchSmokeTest', 'terrainDigestTest'
 }

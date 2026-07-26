@@ -1,5 +1,6 @@
 package com.jokerdayn.swworldgencore;
 
+import com.jokerdayn.swworldgencore.registry.ModBlocks;
 import net.minecraft.client.renderer.BiomeColors;
 import net.minecraft.core.BlockPos;
 import net.neoforged.api.distmarker.Dist;
@@ -29,7 +30,7 @@ public class SWWorldgenCoreClient {
     private void onBlockColor(RegisterColorHandlersEvent.Block event) {
         event.register(
             (state, level, pos, tintIndex) -> PALM_FOLIAGE_COLOR,
-            SWWorldgenCore.PALM_LEAF.get()
+            ModBlocks.PALM_LEAF.get()
         );
         event.register(
             (state, level, pos, tintIndex) -> grassColor(level, pos),
