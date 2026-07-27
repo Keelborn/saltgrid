@@ -17,7 +17,7 @@ public class ShellBlock extends Block {
     public static final MapCodec<ShellBlock> CODEC =
         simpleCodec(ShellBlock::new);
     public static final EnumProperty<Variation> VARIANT = EnumProperty.create("variation", Variation.class);
-    private static final VoxelShape SHAPE = Block.box(2, 0, 2, 14, 2, 14);
+    private static final VoxelShape SHAPE = Block.box(0, 0, 0, 16, 3, 16);
 
     public enum Variation implements net.minecraft.util.StringRepresentable {
         YELLOW("yellow"), PINK("pink"), WHITE("white");

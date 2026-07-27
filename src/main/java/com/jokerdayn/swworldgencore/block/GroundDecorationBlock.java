@@ -18,11 +18,11 @@ public class GroundDecorationBlock extends Block {
         simpleCodec(GroundDecorationBlock::new);
     public static final EnumProperty<Type> VARIANT = EnumProperty.create("variant", Type.class);
 
-    private static final VoxelShape ROCK_TINY = Block.box(4, 0, 6, 9, 1, 9);
-    private static final VoxelShape ROCK_SMALL = Block.box(6, 0, 8, 13, 2, 12);
-    private static final VoxelShape ROCK_MEDIUM = Block.box(1, 0, 5, 8, 2, 9);
-    private static final VoxelShape ROCK_LARGE = Block.box(1, 0, 3, 13, 4, 12);
-    private static final VoxelShape STICK = Block.box(0, 0, 0, 10, 1, 2);
+    // Models are randomly rotated by the blockstate.  A stable footprint makes
+    // every variation reliably selectable, rather than exposing a mismatched
+    // outline for a client-side random model rotation.
+    private static final VoxelShape ROCK_SHAPE = Block.box(0, 0, 0, 16, 3, 16);
+    private static final VoxelShape STICK_SHAPE = Block.box(0, 0, 0, 16, 1, 16);
 
     public enum Type implements net.minecraft.util.StringRepresentable {
         ROCK_TINY("rock_tiny"), ROCK_SMALL("rock_small"), ROCK_MEDIUM("rock_medium"),
@@ -53,11 +53,8 @@ public class GroundDecorationBlock extends Block {
     public VoxelShape getShape(BlockState state, net.minecraft.world.level.BlockGetter level,
                                BlockPos pos, CollisionContext context) {
         return switch (state.getValue(VARIANT)) {
-            case ROCK_TINY -> ROCK_TINY;
-            case ROCK_SMALL -> ROCK_SMALL;
-            case ROCK_MEDIUM -> ROCK_MEDIUM;
-            case ROCK_LARGE -> ROCK_LARGE;
-            case STICK_SMALL, STICK_MEDIUM, STICK_LARGE -> STICK;
+            case ROCK_TINY, ROCK_SMALL, ROCK_MEDIUM, ROCK_LARGE -> ROCK_SHAPE;
+            case STICK_SMALL, STICK_MEDIUM, STICK_LARGE -> STICK_SHAPE;
         };
     }
 
