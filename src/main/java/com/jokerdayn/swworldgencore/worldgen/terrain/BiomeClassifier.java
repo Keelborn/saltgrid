@@ -17,6 +17,7 @@ public final class BiomeClassifier {
 
     private final SpawnIslandField spawnIsland;
     private final GridIslandField gridIslands;
+    private final IslandLakeField lakes;
     private final TerrainColumnSampler columns;
     private final ColumnCaches caches;
     private final int seaLevel;
@@ -24,16 +25,20 @@ public final class BiomeClassifier {
     /** Scratch owned solely by {@link #classify}. */
     private final ThreadLocal<GridIslandSample> scratch =
         ThreadLocal.withInitial(GridIslandSample::new);
+    private final ThreadLocal<IslandLakeSample> lakeScratch =
+        ThreadLocal.withInitial(IslandLakeSample::new);
 
     public BiomeClassifier(
         SpawnIslandField spawnIsland,
         GridIslandField gridIslands,
+        IslandLakeField lakes,
         TerrainColumnSampler columns,
         ColumnCaches caches,
         int seaLevel
     ) {
         this.spawnIsland = spawnIsland;
         this.gridIslands = gridIslands;
+        this.lakes = lakes;
         this.columns = columns;
         this.caches = caches;
         this.seaLevel = seaLevel;
@@ -47,6 +52,9 @@ public final class BiomeClassifier {
         int floor = columns.floorAt(x, z);
         GridIslandSample sample = scratch.get();
         gridIslands.sample(x, z, sample);
+        double spawnDistance = spawnIsland.distanceTo(x, z);
+        IslandLakeSample lake = lakeScratch.get();
+        lakes.shape(x, z, spawnDistance, sample, floor, lake);
 
         BiomeCategory result;
         if (sample.volcano && floor >= seaLevel) {
@@ -55,11 +63,13 @@ public final class BiomeClassifier {
             result = seaLevel - floor > DEEP_OCEAN_DEPTH
                 ? BiomeCategory.DEEP_OCEAN
                 : BiomeCategory.OCEAN;
+        } else if (lake.present) {
+            boolean clearing = gridIslands.isClearing(x, z, spawnDistance);
+            result = clearing ? BiomeCategory.TROPICS : BiomeCategory.SAVANNA;
         } else if (columns.isBeach(x, z, floor)) {
             result = BiomeCategory.BEACH;
         } else {
-            boolean clearing =
-                gridIslands.isClearing(x, z, spawnIsland.distanceTo(x, z));
+            boolean clearing = gridIslands.isClearing(x, z, spawnDistance);
             result = clearing ? BiomeCategory.TROPICS : BiomeCategory.SAVANNA;
         }
 

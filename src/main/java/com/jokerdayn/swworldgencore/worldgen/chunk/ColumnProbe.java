@@ -3,6 +3,8 @@ package com.jokerdayn.swworldgencore.worldgen.chunk;
 import static com.jokerdayn.swworldgencore.worldgen.terrain.IslandSettings.VOLCANO_SHELF_T;
 
 import com.jokerdayn.swworldgencore.worldgen.terrain.GridIslandSample;
+import com.jokerdayn.swworldgencore.worldgen.terrain.IslandLakeField;
+import com.jokerdayn.swworldgencore.worldgen.terrain.IslandLakeSample;
 import com.jokerdayn.swworldgencore.worldgen.terrain.SurfacePalette;
 import com.jokerdayn.swworldgencore.worldgen.terrain.TerrainBlocks;
 import com.jokerdayn.swworldgencore.worldgen.terrain.TerrainContext;
@@ -28,6 +30,8 @@ public final class ColumnProbe {
     /** Scratch per calling thread; never handed out, so nothing can alias it. */
     private static final ThreadLocal<GridIslandSample> SCRATCH =
         ThreadLocal.withInitial(GridIslandSample::new);
+    private static final ThreadLocal<IslandLakeSample> LAKE_SCRATCH =
+        ThreadLocal.withInitial(IslandLakeSample::new);
 
     private static final BlockState AIR = Blocks.AIR.defaultBlockState();
 
@@ -45,8 +49,10 @@ public final class ColumnProbe {
         double spawnHeight = terrain.spawnIsland.heightAt(x, z, spawnDistance);
         GridIslandSample sample = SCRATCH.get();
         terrain.gridIslands.sample(x, z, sample);
-        int floor =
-            terrain.columns.computeFloor(x, z, spawnDistance, spawnHeight, sample.height);
+        IslandLakeSample lake = LAKE_SCRATCH.get();
+        int floor = terrain.columns.computeFloor(
+            x, z, spawnDistance, spawnHeight, sample, lake
+        );
 
         boolean oceanFloorQuery =
             heightmapType == Heightmap.Types.OCEAN_FLOOR ||
@@ -64,6 +70,7 @@ public final class ColumnProbe {
         // Non-ocean heightmaps report the top of the water, or of the lava lake.
         int surface = Math.max(floor, seaLevel);
         if (sample.crater) surface = Math.max(surface, sample.lavaLevel);
+        if (lake.water) surface = Math.max(surface, lake.waterLevel);
         return surface + 1;
     }
 
@@ -86,6 +93,7 @@ public final class ColumnProbe {
         double spawnHeight = terrain.spawnIsland.heightAt(x, z, spawnDistance);
         GridIslandSample sample = SCRATCH.get();
         terrain.gridIslands.sample(x, z, sample);
+        IslandLakeSample lake = LAKE_SCRATCH.get();
 
         double gridDistance = sample.normalizedDistance;
         double gridHeight = sample.height;
@@ -95,7 +103,9 @@ public final class ColumnProbe {
         double centerX = sample.centerX;
         double centerZ = sample.centerZ;
 
-        int floor = terrain.columns.computeFloor(x, z, spawnDistance, spawnHeight, gridHeight);
+        int floor = terrain.columns.computeFloor(
+            x, z, spawnDistance, spawnHeight, sample, lake
+        );
         boolean onIsland = spawnHeight > 0 || gridHeight > 0.5;
 
         int minNeighbor = floor;
@@ -119,11 +129,14 @@ public final class ColumnProbe {
         boolean beach = terrain.columns.isBeach(x, z, floor);
         boolean volcanicStrata = volcano && gridDistance <= VOLCANO_SHELF_T;
 
-        BlockState surface = volcano
-            ? terrain.volcanic.surface(
-                x, z, floor, gridDistance, crater, lavaLevel, centerX, centerZ)
-            : terrain.surface.surface(
-                x, z, floor, spawnDistance, gridHeight, gridDistance, beach);
+        BlockState lakeSurface = IslandLakeField.surfaceOverride(lake);
+        BlockState surface = lakeSurface != null
+            ? lakeSurface
+            : volcano
+                ? terrain.volcanic.surface(
+                    x, z, floor, gridDistance, crater, lavaLevel, centerX, centerZ)
+                : terrain.surface.surface(
+                    x, z, floor, spawnDistance, gridHeight, gridDistance, beach);
         BlockState flatSubsurface = volcanicStrata
             ? null
             : volcano
@@ -161,6 +174,8 @@ public final class ColumnProbe {
                 state = surface;
             } else if (crater && y <= lavaLevel) {
                 state = TerrainBlocks.LAVA;
+            } else if (lake.water && y <= lake.waterLevel) {
+                state = TerrainBlocks.WATER;
             } else if (y <= seaLevel && floor < seaLevel) {
                 if (y == floor + 1 && underwaterSlab) {
                     state = slab;

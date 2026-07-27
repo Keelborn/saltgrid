@@ -95,7 +95,7 @@ public final class SmallFeatureDecorator {
                     double spawnHeight = terrain.spawnIsland.heightAt(wx, wz, spawnDistance);
                     terrain.gridIslands.sample(wx, wz, fallback);
                     floor = terrain.columns.computeFloor(
-                        wx, wz, spawnDistance, spawnHeight, fallback.height
+                        wx, wz, spawnDistance, spawnHeight, fallback
                     );
                     onIsland = spawnHeight > 0.0 || fallback.height > 0.5;
                     onVolcano = fallback.volcano;

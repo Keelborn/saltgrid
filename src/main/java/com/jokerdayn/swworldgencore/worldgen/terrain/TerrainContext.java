@@ -21,6 +21,7 @@ public final class TerrainContext {
     public final ColumnCaches caches;
     public final SpawnIslandField spawnIsland;
     public final GridIslandField gridIslands;
+    public final IslandLakeField lakes;
     public final TerrainColumnSampler columns;
     public final BiomeClassifier biomes;
     public final SurfacePalette surface;
@@ -32,10 +33,13 @@ public final class TerrainContext {
         this.caches = new ColumnCaches(diagnostics);
         this.spawnIsland = new SpawnIslandField(noise);
         this.gridIslands = new GridIslandField(noise, seaLevel);
+        this.lakes = new IslandLakeField(noise, spawnIsland, seaLevel);
         this.columns = new TerrainColumnSampler(
-            noise, spawnIsland, gridIslands, caches, diagnostics, seaLevel
+            noise, spawnIsland, gridIslands, lakes, caches, diagnostics, seaLevel
         );
-        this.biomes = new BiomeClassifier(spawnIsland, gridIslands, columns, caches, seaLevel);
+        this.biomes = new BiomeClassifier(
+            spawnIsland, gridIslands, lakes, columns, caches, seaLevel
+        );
         this.surface = new SurfacePalette(noise, seaLevel);
         this.volcanic = new VolcanicPalette(noise, seaLevel);
     }

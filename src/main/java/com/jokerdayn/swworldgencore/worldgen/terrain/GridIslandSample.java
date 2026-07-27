@@ -37,6 +37,9 @@ public final class GridIslandSample {
     /** Absolute y of the lava surface, or {@code 0} when not a volcano. */
     public int lavaLevel;
 
+    /** Stable freshwater elevation for this island, or {@code 0} for volcano/open ocean. */
+    public int freshwaterLevel;
+
     /** Resets to the "no island here" state. */
     void clear() {
         normalizedDistance = IslandSettings.NO_ISLAND_DISTANCE;
@@ -47,6 +50,7 @@ public final class GridIslandSample {
         centerX = 0.0;
         centerZ = 0.0;
         lavaLevel = 0;
+        freshwaterLevel = 0;
     }
 
     /** True when this column belongs to some grid island. */

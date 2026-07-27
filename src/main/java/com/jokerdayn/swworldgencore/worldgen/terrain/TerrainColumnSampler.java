@@ -39,6 +39,7 @@ public final class TerrainColumnSampler {
     private final TerrainNoise noise;
     private final SpawnIslandField spawnIsland;
     private final GridIslandField gridIslands;
+    private final IslandLakeField lakes;
     private final ColumnCaches caches;
     private final GeneratorDiagnostics diagnostics;
     private final int seaLevel;
@@ -49,11 +50,14 @@ public final class TerrainColumnSampler {
      */
     private final ThreadLocal<GridIslandSample> floorScratch =
         ThreadLocal.withInitial(GridIslandSample::new);
+    private final ThreadLocal<IslandLakeSample> floorLakeScratch =
+        ThreadLocal.withInitial(IslandLakeSample::new);
 
     public TerrainColumnSampler(
         TerrainNoise noise,
         SpawnIslandField spawnIsland,
         GridIslandField gridIslands,
+        IslandLakeField lakes,
         ColumnCaches caches,
         GeneratorDiagnostics diagnostics,
         int seaLevel
@@ -61,6 +65,7 @@ public final class TerrainColumnSampler {
         this.noise = noise;
         this.spawnIsland = spawnIsland;
         this.gridIslands = gridIslands;
+        this.lakes = lakes;
         this.caches = caches;
         this.diagnostics = diagnostics;
         this.seaLevel = seaLevel;
@@ -81,7 +86,7 @@ public final class TerrainColumnSampler {
      * @param spawnHeight   {@link SpawnIslandField#heightAt} for this column
      * @param gridHeight    {@link GridIslandSample#height} for this column
      */
-    public int computeFloor(
+    private int computeBaseFloor(
         int x,
         int z,
         double spawnDistance,
@@ -141,6 +146,38 @@ public final class TerrainColumnSampler {
         return clampFloor(oceanFloor);
     }
 
+    /**
+     * Computes the terrain floor and fills the matching freshwater-lake state.
+     *
+     * <p>Callers that need to write a complete column retain {@code lakeOut}; height-only
+     * callers use the convenience overload below.</p>
+     */
+    public int computeFloor(
+        int x,
+        int z,
+        double spawnDistance,
+        double spawnHeight,
+        GridIslandSample grid,
+        IslandLakeSample lakeOut
+    ) {
+        int baseFloor = computeBaseFloor(x, z, spawnDistance, spawnHeight, grid.height);
+        lakes.shape(x, z, spawnDistance, grid, baseFloor, lakeOut);
+        return clampFloor(lakeOut.floor);
+    }
+
+    /** Height-only convenience overload. */
+    public int computeFloor(
+        int x,
+        int z,
+        double spawnDistance,
+        double spawnHeight,
+        GridIslandSample grid
+    ) {
+        return computeFloor(
+            x, z, spawnDistance, spawnHeight, grid, floorLakeScratch.get()
+        );
+    }
+
     public static int clampFloor(int floor) {
         return Mth.clamp(floor, MIN_FLOOR, MAX_FLOOR);
     }
@@ -156,7 +193,7 @@ public final class TerrainColumnSampler {
         double spawnHeight = spawnIsland.heightAt(x, z, spawnDistance);
         GridIslandSample sample = floorScratch.get();
         gridIslands.sample(x, z, sample);
-        int floor = computeFloor(x, z, spawnDistance, spawnHeight, sample.height);
+        int floor = computeFloor(x, z, spawnDistance, spawnHeight, sample);
 
         caches.storeFloor(key, floor, seed);
         return floor;

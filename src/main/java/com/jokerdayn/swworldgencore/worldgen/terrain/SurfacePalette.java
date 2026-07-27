@@ -13,6 +13,9 @@ public final class SurfacePalette {
     /** Sand reaches this far below sea level around island shores. */
     private static final int SHALLOW_SAND_DEPTH = 6;
 
+    /** One bounded clay-deposit candidate per this many open-ocean blocks. */
+    private static final int OCEAN_CLAY_CELL = 80;
+
     private final TerrainNoise noise;
     private final int seaLevel;
 
@@ -47,8 +50,13 @@ public final class SurfacePalette {
         return TerrainBlocks.GRASS_BLOCK;
     }
 
-    /** Open sea floor: sand in the shallows grading into gravel with depth. */
+    /**
+     * Open sea floor: sand in the shallows grading into gravel with depth, crossed by
+     * occasional broad clay beds rather than isolated one-block specks.
+     */
     public BlockState seaFloor(int x, int z, int floor) {
+        if (isOceanClayDeposit(x, z)) return TerrainBlocks.CLAY;
+
         int depth = seaLevel - floor;
         double depthNorm = Mth.clamp((double) (depth - 4) / 50.0, 0.0, 1.0);
         double n =
@@ -62,7 +70,45 @@ public final class SurfacePalette {
         if (gravel) {
             return detail < 0.03 ? TerrainBlocks.COBBLESTONE : TerrainBlocks.GRAVEL;
         }
-        return detail < 0.02 ? TerrainBlocks.CLAY : TerrainBlocks.SAND;
+        return TerrainBlocks.SAND;
+    }
+
+    /**
+     * A deterministic 12-26 block wide organic clay bed wholly contained in its cell.
+     * Keeping each candidate away from the cell edge avoids both one-block fragments and
+     * neighbour searches in the hottest surface-classification path.
+     */
+    public boolean isOceanClayDeposit(int x, int z) {
+        int cellX = Math.floorDiv(x, OCEAN_CLAY_CELL);
+        int cellZ = Math.floorDiv(z, OCEAN_CLAY_CELL);
+        double existence = noise.hsh(cellX * 149 + 17, cellZ * 157 - 23);
+        if (existence >= 0.34) return false;
+
+        int localOriginX = cellX * OCEAN_CLAY_CELL;
+        int localOriginZ = cellZ * OCEAN_CLAY_CELL;
+        double centerX =
+            localOriginX + 18.0 + noise.hsh(cellX * 163 + 29, cellZ * 167 - 31) * 44.0;
+        double centerZ =
+            localOriginZ + 18.0 + noise.hsh(cellX * 173 + 37, cellZ * 179 - 41) * 44.0;
+        double radiusX = 7.0 + noise.hsh(cellX * 181 + 43, cellZ * 191 - 47) * 6.0;
+        double radiusZ = 6.0 + noise.hsh(cellX * 193 + 53, cellZ * 197 - 59) * 4.5;
+        double rotation =
+            noise.hsh(cellX * 199 + 61, cellZ * 211 - 67) * Math.PI;
+
+        double dx = x - centerX;
+        double dz = z - centerZ;
+        double cos = Math.cos(rotation);
+        double sin = Math.sin(rotation);
+        double rx = dx * cos + dz * sin;
+        double rz = -dx * sin + dz * cos;
+        double angle = Math.atan2(rz / radiusZ, rx / radiusX);
+        double outline =
+            1.0 +
+            Math.sin(angle * 3.0 + existence * 19.0) * 0.10 +
+            Math.sin(angle * 5.0 - existence * 11.0) * 0.055;
+        double normalized =
+            Math.sqrt((rx * rx) / (radiusX * radiusX) + (rz * rz) / (radiusZ * radiusZ));
+        return normalized <= outline;
     }
 
     /**

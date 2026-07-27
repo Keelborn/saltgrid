@@ -390,7 +390,7 @@ public class OceanChunkGenerator extends ChunkGenerator {
             String.format("%.4f", spawnHeight),
             String.format("%.4f", sample.height),
             String.format("%.4f", sample.normalizedDistance),
-            current.terrain.columns.computeFloor(0, 0, spawnDistance, spawnHeight, sample.height)
+            current.terrain.columns.computeFloor(0, 0, spawnDistance, spawnHeight, sample)
         );
     }
 }
