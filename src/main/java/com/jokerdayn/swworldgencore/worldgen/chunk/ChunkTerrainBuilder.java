@@ -10,6 +10,8 @@ import com.jokerdayn.swworldgencore.diagnostics.Phase;
 import com.jokerdayn.swworldgencore.diagnostics.Token;
 import com.jokerdayn.swworldgencore.worldgen.noise.Hashing;
 import com.jokerdayn.swworldgencore.worldgen.terrain.GridIslandSample;
+import com.jokerdayn.swworldgencore.worldgen.terrain.IslandLakeField;
+import com.jokerdayn.swworldgencore.worldgen.terrain.IslandLakeSample;
 import com.jokerdayn.swworldgencore.worldgen.terrain.SurfacePalette;
 import com.jokerdayn.swworldgencore.worldgen.terrain.TerrainBlocks;
 import com.jokerdayn.swworldgencore.worldgen.terrain.TerrainContext;
@@ -73,6 +75,7 @@ public final class ChunkTerrainBuilder {
         long writeNs;
         int maxFloor = Integer.MIN_VALUE;
         int maxLavaLevel;
+        int maxLakeLevel;
     }
 
     /** Generates the chunk and returns its column summary for the decoration pass. */
@@ -81,6 +84,7 @@ public final class ChunkTerrainBuilder {
         ChunkTerrainScratch scratch = SCRATCH.get();
         Tally tally = new Tally();
         tally.maxLavaLevel = terrain.seaLevel;
+        tally.maxLakeLevel = terrain.seaLevel;
 
         ChunkColumnCache columnCache = new ChunkColumnCache();
 
@@ -112,6 +116,7 @@ public final class ChunkTerrainBuilder {
         Tally tally
     ) {
         GridIslandSample sample = scratch.islandSample;
+        IslandLakeSample lake = scratch.lakeSample;
         int baseX = pos.getMinBlockX();
         int baseZ = pos.getMinBlockZ();
 
@@ -125,7 +130,7 @@ public final class ChunkTerrainBuilder {
                 double spawnHeight = terrain.spawnIsland.heightAt(wx, wz, spawnDistance);
                 terrain.gridIslands.sample(wx, wz, sample);
                 int floor = terrain.columns.computeFloor(
-                    wx, wz, spawnDistance, spawnHeight, sample.height
+                    wx, wz, spawnDistance, spawnHeight, sample, lake
                 );
 
                 // The shoreline search in the next pass probes exactly these columns, so hand
@@ -142,6 +147,7 @@ public final class ChunkTerrainBuilder {
                 scratch.volcanoCenterX[index] = sample.centerX;
                 scratch.volcanoCenterZ[index] = sample.centerZ;
                 scratch.lavaLevels[index] = sample.lavaLevel;
+                scratch.lakeWaterLevels[index] = lake.waterLevel;
                 scratch.floors[index] = floor;
 
                 int flags = sample.volcano ? ColumnFlags.VOLCANO : 0;
@@ -149,6 +155,13 @@ public final class ChunkTerrainBuilder {
                     flags |= ColumnFlags.CRATER;
                     tally.maxLavaLevel = Math.max(tally.maxLavaLevel, sample.lavaLevel);
                 }
+                if (lake.present) flags |= ColumnFlags.FRESHWATER_LAKE;
+                if (lake.water) {
+                    flags |= ColumnFlags.FRESHWATER;
+                    tally.maxLakeLevel = Math.max(tally.maxLakeLevel, lake.waterLevel);
+                }
+                if (lake.clay) flags |= ColumnFlags.LAKE_CLAY;
+                if (lake.gravel) flags |= ColumnFlags.LAKE_GRAVEL;
                 scratch.terrainFlags[index] = (byte) flags;
 
                 if (floor > tally.maxFloor) tally.maxFloor = floor;
@@ -159,6 +172,7 @@ public final class ChunkTerrainBuilder {
                     int cacheFlags =
                         spawnHeight > 0.0 || sample.height > 0.5 ? ColumnFlags.ISLAND : 0;
                     if (sample.volcano) cacheFlags |= ColumnFlags.VOLCANO;
+                    if (lake.present) cacheFlags |= ColumnFlags.FRESHWATER_LAKE;
                     columnCache.flags[columnIndex] = (byte) cacheFlags;
                 }
             }
@@ -193,6 +207,12 @@ public final class ChunkTerrainBuilder {
                 double gridDistance = scratch.gridDistances[index];
                 boolean volcano = ColumnFlags.has(scratch.terrainFlags[index], ColumnFlags.VOLCANO);
                 boolean crater = ColumnFlags.has(scratch.terrainFlags[index], ColumnFlags.CRATER);
+                boolean freshwater =
+                    ColumnFlags.has(scratch.terrainFlags[index], ColumnFlags.FRESHWATER);
+                boolean lakeClay =
+                    ColumnFlags.has(scratch.terrainFlags[index], ColumnFlags.LAKE_CLAY);
+                boolean lakeGravel =
+                    ColumnFlags.has(scratch.terrainFlags[index], ColumnFlags.LAKE_GRAVEL);
                 int lavaLevel = scratch.lavaLevels[index];
                 boolean onIsland = spawnHeight > 0.0 || gridHeight > 0.5;
 
@@ -223,14 +243,18 @@ public final class ChunkTerrainBuilder {
                 boolean beach = terrain.columns.isBeach(wx, wz, floor);
                 if (beach) tally.beach++;
 
-                scratch.surfaces[columnIndex] = volcano
-                    ? terrain.volcanic.surface(
-                        wx, wz, floor, gridDistance, crater, lavaLevel,
-                        scratch.volcanoCenterX[index], scratch.volcanoCenterZ[index]
-                    )
-                    : terrain.surface.surface(
-                        wx, wz, floor, spawnDistance, gridHeight, gridDistance, beach
-                    );
+                BlockState lakeSurface =
+                    IslandLakeField.surfaceOverride(freshwater, lakeClay, lakeGravel);
+                scratch.surfaces[columnIndex] = lakeSurface != null
+                    ? lakeSurface
+                    : volcano
+                        ? terrain.volcanic.surface(
+                            wx, wz, floor, gridDistance, crater, lavaLevel,
+                            scratch.volcanoCenterX[index], scratch.volcanoCenterZ[index]
+                        )
+                        : terrain.surface.surface(
+                            wx, wz, floor, spawnDistance, gridHeight, gridDistance, beach
+                        );
 
                 // Every entry is assigned unconditionally: the scratch is reused across
                 // chunks, so a "leave it alone" branch would read last chunk's value.
@@ -301,7 +325,7 @@ public final class ChunkTerrainBuilder {
         // below it, so the acquired section range must always reach the sea surface.
         int maxWorkY = Math.max(
             Math.max(tally.maxFloor + 2, tally.maxLavaLevel),
-            terrain.seaLevel
+            Math.max(terrain.seaLevel, tally.maxLakeLevel)
         );
         int minSection = chunk.getSectionIndex(minY);
         int maxSection = chunk.getSectionIndex(maxWorkY);
@@ -361,6 +385,7 @@ public final class ChunkTerrainBuilder {
                 boolean crater =
                     ColumnFlags.has(scratch.terrainFlags[index], ColumnFlags.CRATER);
                 int lavaLevel = scratch.lavaLevels[index];
+                int lakeWaterLevel = scratch.lakeWaterLevels[index];
                 int dirtLayers = scratch.dirtLayers[columnIndex];
                 BlockState surface = scratch.surfaces[columnIndex];
                 tally.solidWrites += floor - (long) minY + 1L;
@@ -394,6 +419,13 @@ public final class ChunkTerrainBuilder {
                     tally.lavaWrites += lavaLevel - (long) floor;
                     fillColumn(chunk, lx, lz, floor + 1, lavaLevel, TerrainBlocks.LAVA);
                     worldSurface.update(lx, lavaLevel, lz, TerrainBlocks.LAVA);
+                }
+
+                if (lakeWaterLevel > floor) {
+                    tally.waterWrites += lakeWaterLevel - (long) floor;
+                    fillColumn(chunk, lx, lz, floor + 1, lakeWaterLevel, TerrainBlocks.WATER);
+                    worldSurface.update(lx, lakeWaterLevel, lz, TerrainBlocks.WATER);
+                    continue;
                 }
 
                 if (floor >= seaLevel) continue;

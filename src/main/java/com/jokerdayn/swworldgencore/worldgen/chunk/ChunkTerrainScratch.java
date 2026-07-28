@@ -3,6 +3,7 @@ package com.jokerdayn.swworldgencore.worldgen.chunk;
 import static com.jokerdayn.swworldgencore.worldgen.GenSettings.LOCAL_SAMPLE_AREA;
 
 import com.jokerdayn.swworldgencore.worldgen.terrain.GridIslandSample;
+import com.jokerdayn.swworldgencore.worldgen.terrain.IslandLakeSample;
 import net.minecraft.world.level.block.state.BlockState;
 
 /**
@@ -28,6 +29,7 @@ public final class ChunkTerrainScratch {
     public final double[] volcanoCenterX = new double[LOCAL_SAMPLE_AREA];
     public final double[] volcanoCenterZ = new double[LOCAL_SAMPLE_AREA];
     public final int[] lavaLevels = new int[LOCAL_SAMPLE_AREA];
+    public final int[] lakeWaterLevels = new int[LOCAL_SAMPLE_AREA];
     public final byte[] terrainFlags = new byte[LOCAL_SAMPLE_AREA];
 
     // --- 16x16 column plan -----------------------------------------------------
@@ -43,4 +45,6 @@ public final class ChunkTerrainScratch {
 
     /** Island sample, reused across all 324 grid probes. */
     public final GridIslandSample islandSample = new GridIslandSample();
+    /** Freshwater sample, reused across all 324 grid probes. */
+    public final IslandLakeSample lakeSample = new IslandLakeSample();
 }
