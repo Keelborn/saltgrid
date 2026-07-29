@@ -24,6 +24,9 @@ public final class ColumnFlags {
     /** The freshwater bed or bank surface uses sparse gravel. */
     public static final int LAKE_GRAVEL = 64;
 
+    /** The freshwater bed or its rim beach uses sand. */
+    public static final int LAKE_SAND = 128;
+
     private ColumnFlags() {}
 
     public static boolean has(byte flags, int flag) {

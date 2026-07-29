@@ -33,7 +33,7 @@ public final class TerrainContext {
         this.caches = new ColumnCaches(diagnostics);
         this.spawnIsland = new SpawnIslandField(noise);
         this.gridIslands = new GridIslandField(noise, seaLevel);
-        this.lakes = new IslandLakeField(noise, spawnIsland, seaLevel);
+        this.lakes = new IslandLakeField(noise, spawnIsland, gridIslands, seaLevel);
         this.columns = new TerrainColumnSampler(
             noise, spawnIsland, gridIslands, lakes, caches, diagnostics, seaLevel
         );

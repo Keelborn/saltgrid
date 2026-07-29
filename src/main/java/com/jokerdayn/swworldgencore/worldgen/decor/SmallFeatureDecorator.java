@@ -11,6 +11,7 @@ import com.jokerdayn.swworldgencore.worldgen.chunk.ChunkColumnCache;
 import com.jokerdayn.swworldgencore.worldgen.chunk.ColumnFlags;
 import com.jokerdayn.swworldgencore.worldgen.terrain.BiomeCategory;
 import com.jokerdayn.swworldgencore.worldgen.terrain.GridIslandSample;
+import com.jokerdayn.swworldgencore.worldgen.terrain.IslandLakeSample;
 import com.jokerdayn.swworldgencore.worldgen.terrain.TerrainContext;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.WorldGenLevel;
@@ -32,6 +33,12 @@ public final class SmallFeatureDecorator {
     private static final GroundDecorationBlock.Type[] GROUND_DECORATION_TYPES =
         GroundDecorationBlock.Type.values();
 
+    /** The four sides checked for lake water beside a reed. */
+    private static final int[][] SIDES = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+
+    /** Upper bound on the lake bed scan; no basin is deeper than this. */
+    private static final int MAX_LAKE_DEPTH_SCAN = 6;
+
     private final TerrainContext terrain;
     private final GeneratorDiagnostics diagnostics;
 
@@ -50,6 +57,7 @@ public final class SmallFeatureDecorator {
         int flowers;
         int bushes;
         int bushLeaves;
+        int lakePlants;
     }
 
     public void decorate(
@@ -71,9 +79,11 @@ public final class SmallFeatureDecorator {
             .setValue(LeavesBlock.PERSISTENT, true);
 
         GridIslandSample fallback = columns == null ? new GridIslandSample() : null;
+        IslandLakeSample fallbackLake = columns == null ? new IslandLakeSample() : null;
         BlockPos.MutableBlockPos surfacePos = new BlockPos.MutableBlockPos();
         BlockPos.MutableBlockPos abovePos = new BlockPos.MutableBlockPos();
         BlockPos.MutableBlockPos bushPos = new BlockPos.MutableBlockPos();
+        BlockPos.MutableBlockPos lakePos = new BlockPos.MutableBlockPos();
 
         for (int lx = 0; lx < 16; lx++) {
             for (int lz = 0; lz < 16; lz++) {
@@ -83,22 +93,25 @@ public final class SmallFeatureDecorator {
                 int floor;
                 boolean onIsland;
                 boolean onVolcano;
+                boolean onLake;
                 if (columns != null) {
                     int columnIndex = ChunkColumnCache.index(lx, lz);
                     floor = columns.floor[columnIndex];
                     byte flags = columns.flags[columnIndex];
                     onIsland = ColumnFlags.has(flags, ColumnFlags.ISLAND);
                     onVolcano = ColumnFlags.has(flags, ColumnFlags.VOLCANO);
+                    onLake = ColumnFlags.has(flags, ColumnFlags.FRESHWATER_LAKE);
                 } else {
                     // Fallback for a chunk whose terrain hand-off is gone; slower but exact.
                     double spawnDistance = terrain.spawnIsland.distanceTo(wx, wz);
                     double spawnHeight = terrain.spawnIsland.heightAt(wx, wz, spawnDistance);
                     terrain.gridIslands.sample(wx, wz, fallback);
                     floor = terrain.columns.computeFloor(
-                        wx, wz, spawnDistance, spawnHeight, fallback
+                        wx, wz, spawnDistance, spawnHeight, fallback, fallbackLake
                     );
                     onIsland = spawnHeight > 0.0 || fallback.height > 0.5;
                     onVolcano = fallback.volcano;
+                    onLake = fallbackLake.present;
                 }
 
                 if (floor < terrain.seaLevel) continue;
@@ -110,6 +123,12 @@ public final class SmallFeatureDecorator {
                 // read serves both the sand and the grass tests.
                 BlockState ground = level.getBlockState(surfacePos);
                 boolean onSand = ground.is(Blocks.SAND);
+
+                // A lake bed or its beach gets reeds and lily pads instead of the coastal
+                // set; only the grassy part of the bank falls through to the ordinary path.
+                if (onLake && decorateLake(level, wx, wz, floor, onSand, lakePos, tally)) {
+                    continue;
+                }
 
                 if (onSand && tryPlacePalm(level, wx, wz, floor, abovePos, tally, benchmark)) {
                     continue;
@@ -203,6 +222,94 @@ public final class SmallFeatureDecorator {
             && Math.abs(terrain.columns.floorAt(wx, wz - 2) - floor) <= 1;
     }
 
+    /**
+     * Lake decoration: lily pads over the shallows, reeds on the sandy rim.
+     *
+     * @param onSand whether the surface block is lake sand rather than grass
+     * @return {@code true} when the column is water or its beach, so the coastal set
+     *         (palms, shells) must not run on it; {@code false} for the grassy bank
+     */
+    private boolean decorateLake(
+        WorldGenLevel level,
+        int wx,
+        int wz,
+        int floor,
+        boolean onSand,
+        BlockPos.MutableBlockPos cursor,
+        Tally tally
+    ) {
+        cursor.set(wx, floor + 1, wz);
+        if (level.getBlockState(cursor).is(Blocks.WATER)) {
+            placeLilyPad(level, wx, wz, floor, cursor, tally);
+            return true;
+        }
+        if (!onSand) return false;
+        placeReeds(level, wx, wz, floor, cursor, tally);
+        return true;
+    }
+
+    /** Lily pads float over the shallows only; the deep middle stays open water. */
+    private void placeLilyPad(
+        WorldGenLevel level,
+        int wx,
+        int wz,
+        int floor,
+        BlockPos.MutableBlockPos cursor,
+        Tally tally
+    ) {
+        int top = floor + 1;
+        while (top - floor < MAX_LAKE_DEPTH_SCAN
+            && level.getBlockState(cursor.set(wx, top + 1, wz)).is(Blocks.WATER)) {
+            top++;
+        }
+        if (top - floor > 2) return;
+        if (terrain.noise.hsh(wx * 103, wz * 107) >= 0.05) return;
+
+        cursor.set(wx, top + 1, wz);
+        if (!level.getBlockState(cursor).isAir()) return;
+        level.setBlock(cursor, Blocks.LILY_PAD.defaultBlockState(), 2);
+        tally.lakePlants++;
+    }
+
+    /**
+     * Reeds need water beside their base block, which the lake rim guarantees: its surface
+     * sits exactly at the water level, so the neighbouring water block shares its y.
+     */
+    private void placeReeds(
+        WorldGenLevel level,
+        int wx,
+        int wz,
+        int floor,
+        BlockPos.MutableBlockPos cursor,
+        Tally tally
+    ) {
+        if (terrain.noise.hsh(wx * 109, wz * 113) >= 0.11) return;
+        if (!isBesideWater(level, wx, wz, floor, cursor)) return;
+
+        int height = 2 + (int) (terrain.noise.hsh(wx * 127, wz * 131) * 2.0);
+        BlockState reed = Blocks.SUGAR_CANE.defaultBlockState();
+        for (int step = 1; step <= height; step++) {
+            cursor.set(wx, floor + step, wz);
+            if (!level.getBlockState(cursor).isAir()) break;
+            level.setBlock(cursor, reed, 2);
+            tally.lakePlants++;
+        }
+    }
+
+    private static boolean isBesideWater(
+        WorldGenLevel level,
+        int wx,
+        int wz,
+        int floor,
+        BlockPos.MutableBlockPos cursor
+    ) {
+        for (int[] side : SIDES) {
+            cursor.set(wx + side[0], floor, wz + side[1]);
+            if (level.getBlockState(cursor).is(Blocks.WATER)) return true;
+        }
+        return false;
+    }
+
     private BlockState pickFlower(int wx, int wz) {
         double roll = terrain.noise.hsh(wx * 23, wz * 37);
         if (roll < 0.4) return Blocks.POPPY.defaultBlockState();
@@ -246,5 +353,6 @@ public final class SmallFeatureDecorator {
         diagnostics.add(benchmark, Counter.FLOWERS_PLACED, tally.flowers);
         diagnostics.add(benchmark, Counter.BUSHES_PLACED, tally.bushes);
         diagnostics.add(benchmark, Counter.BUSH_LEAVES_PLACED, tally.bushLeaves);
+        diagnostics.add(benchmark, Counter.LAKE_PLANTS_PLACED, tally.lakePlants);
     }
 }
