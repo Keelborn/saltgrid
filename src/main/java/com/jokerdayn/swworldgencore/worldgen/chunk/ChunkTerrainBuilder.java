@@ -162,6 +162,7 @@ public final class ChunkTerrainBuilder {
                 }
                 if (lake.clay) flags |= ColumnFlags.LAKE_CLAY;
                 if (lake.gravel) flags |= ColumnFlags.LAKE_GRAVEL;
+                if (lake.sand) flags |= ColumnFlags.LAKE_SAND;
                 scratch.terrainFlags[index] = (byte) flags;
 
                 if (floor > tally.maxFloor) tally.maxFloor = floor;
@@ -207,12 +208,12 @@ public final class ChunkTerrainBuilder {
                 double gridDistance = scratch.gridDistances[index];
                 boolean volcano = ColumnFlags.has(scratch.terrainFlags[index], ColumnFlags.VOLCANO);
                 boolean crater = ColumnFlags.has(scratch.terrainFlags[index], ColumnFlags.CRATER);
-                boolean freshwater =
-                    ColumnFlags.has(scratch.terrainFlags[index], ColumnFlags.FRESHWATER);
                 boolean lakeClay =
                     ColumnFlags.has(scratch.terrainFlags[index], ColumnFlags.LAKE_CLAY);
                 boolean lakeGravel =
                     ColumnFlags.has(scratch.terrainFlags[index], ColumnFlags.LAKE_GRAVEL);
+                boolean lakeSand =
+                    ColumnFlags.has(scratch.terrainFlags[index], ColumnFlags.LAKE_SAND);
                 int lavaLevel = scratch.lavaLevels[index];
                 boolean onIsland = spawnHeight > 0.0 || gridHeight > 0.5;
 
@@ -244,7 +245,7 @@ public final class ChunkTerrainBuilder {
                 if (beach) tally.beach++;
 
                 BlockState lakeSurface =
-                    IslandLakeField.surfaceOverride(freshwater, lakeClay, lakeGravel);
+                    IslandLakeField.surfaceOverride(lakeClay, lakeGravel, lakeSand);
                 scratch.surfaces[columnIndex] = lakeSurface != null
                     ? lakeSurface
                     : volcano

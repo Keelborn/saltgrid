@@ -17,8 +17,11 @@ public final class IslandLakeSample {
     /** The surface block is one of the lake's guaranteed clay-yield columns. */
     public boolean clay;
 
-    /** The surface block is part of a sparse gravel bed or shore arc. */
+    /** The surface block is part of a sparse gravel bed or shore patch. */
     public boolean gravel;
+
+    /** The surface block is lake sand: the bed itself, or the beach on its rim. */
+    public boolean sand;
 
     /** Absolute y of the freshwater surface; zero outside the water footprint. */
     public int waterLevel;
@@ -31,6 +34,7 @@ public final class IslandLakeSample {
         water = false;
         clay = false;
         gravel = false;
+        sand = false;
         waterLevel = 0;
         floor = baseFloor;
     }

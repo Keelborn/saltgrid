@@ -93,6 +93,9 @@ public final class IslandLakeResourceSmoke {
         int waterColumns = 0;
         int clayColumns = 0;
         int gravelColumns = 0;
+        int shoreSandColumns = 0;
+        int deepest = 0;
+        int surfaceLevel = 0;
         boolean[][] water = new boolean[41][41];
         int[][] floors = new int[41][41];
         int[][] waterLevels = new int[41][41];
@@ -111,9 +114,14 @@ public final class IslandLakeResourceSmoke {
                 water[localX][localZ] = lake.water;
                 waterLevels[localX][localZ] = lake.waterLevel;
 
-                if (!lake.water) continue;
+                if (!lake.water) {
+                    if (lake.present && lake.sand) shoreSandColumns++;
+                    continue;
+                }
                 waterColumns++;
                 require(floor < lake.waterLevel, label + " has a dry water column");
+                deepest = Math.max(deepest, lake.waterLevel - floor);
+                surfaceLevel = lake.waterLevel;
                 if (lake.clay) {
                     clayColumns++;
                     require(
@@ -139,7 +147,18 @@ public final class IslandLakeResourceSmoke {
             label + " water footprint is not compact: " + waterColumns + " columns"
         );
         require(gravelColumns > 0, label + " has no gravel accents");
+        require(shoreSandColumns >= 20, label + " has no sandy shore: " + shoreSandColumns);
 
+        // A low island cannot afford the full bowl without cutting under the sea floor, so
+        // the expected depth follows the same budget the shaper uses.
+        int expectedDepth = Math.min(3, Math.max(2, surfaceLevel - SEA_LEVEL - 1));
+        require(
+            deepest >= expectedDepth,
+            label + " bed never gets deeper than " + deepest
+        );
+
+        // The rim must be both sealed and *flush*: a solid ring one or two blocks above the
+        // water is what used to make every lake look sunk into its own island.
         int[][] directions = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
         for (int x = 1; x < 40; x++) {
             for (int z = 1; z < 40; z++) {
@@ -149,8 +168,10 @@ public final class IslandLakeResourceSmoke {
                     int nextZ = z + direction[1];
                     if (water[nextX][nextZ]) continue;
                     require(
-                        floors[nextX][nextZ] >= waterLevels[x][z],
-                        label + " freshwater bank is not sealed"
+                        floors[nextX][nextZ] == waterLevels[x][z],
+                        label + " shore is not flush with the water: floor "
+                            + floors[nextX][nextZ] + " beside water level "
+                            + waterLevels[x][z]
                     );
                 }
             }

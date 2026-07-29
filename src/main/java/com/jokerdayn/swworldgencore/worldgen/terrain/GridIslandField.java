@@ -195,9 +195,6 @@ public final class GridIslandField {
         out.volcano = volcano;
         out.crater = false;
         out.lavaLevel = volcano ? seaLevel + VOLCANO_LAVA_ABOVE_SEA : 0;
-        out.freshwaterLevel = volcano
-            ? 0
-            : seaLevel + Mth.clamp((int) Math.round(bestMaxHeight * 0.48), 4, 10);
 
         if (!volcano) {
             out.normalizedDistance = t;
