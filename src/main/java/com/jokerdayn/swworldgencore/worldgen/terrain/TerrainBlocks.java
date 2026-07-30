@@ -23,6 +23,7 @@ public final class TerrainBlocks {
     public static final BlockState GRAVEL = Blocks.GRAVEL.defaultBlockState();
     public static final BlockState CLAY = Blocks.CLAY.defaultBlockState();
     public static final BlockState COBBLESTONE = Blocks.COBBLESTONE.defaultBlockState();
+    public static final BlockState ANDESITE = Blocks.ANDESITE.defaultBlockState();
     public static final BlockState DIRT = Blocks.DIRT.defaultBlockState();
     public static final BlockState COARSE_DIRT = Blocks.COARSE_DIRT.defaultBlockState();
     public static final BlockState GRASS_BLOCK = Blocks.GRASS_BLOCK.defaultBlockState();

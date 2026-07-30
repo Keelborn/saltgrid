@@ -71,6 +71,9 @@ public final class IslandSettings {
     /** Islands whose mountain hash falls below this grow a ridged peak. */
     public static final double GRID_ISLAND_MOUNTAIN_CHANCE = 0.06;
 
+    /** Height of the mountain range on a mountain-class grid island. */
+    public static final double GRID_ISLAND_MOUNTAIN_HEIGHT = 58.0;
+
     /** Sentinel {@code normalizedDistance} reported when a column has no island. */
     public static final double NO_ISLAND_DISTANCE = 2.0;
 

@@ -230,6 +230,15 @@ tasks.register('terrainDigestTest', JavaExec) {
     }
 }
 
+tasks.register('terrainMountainPreview', JavaExec) {
+    group = 'verification'
+    description = 'Renders shaded heightmap previews of the generated mountain ranges.'
+    classpath = sourceSets.spawnSmoke.runtimeClasspath
+    mainClass = 'com.jokerdayn.swworldgencore.worldgen.terrain.TerrainMountainPreview'
+    dependsOn spawnSmokeClasses
+    args layout.buildDirectory.dir('terrain-preview').get().asFile.absolutePath
+}
+
 tasks.register('lakeResourceSmokeTest', JavaExec) {
     group = 'verification'
     description = 'Checks guaranteed lake clay yield and connected broad ocean deposits.'

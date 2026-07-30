@@ -36,7 +36,8 @@ public final class SurfacePalette {
         double spawnDistance,
         double gridHeight,
         double gridDistance,
-        boolean beach
+        boolean beach,
+        int cliffDrop
     ) {
         boolean nearIsland = spawnDistance < SPAWN_ISLAND_MAX_T ||
             (gridDistance <= 1.0 && gridHeight > 0.01);
@@ -47,7 +48,37 @@ public final class SurfacePalette {
             return seaFloor(x, z, floor);
         }
         if (beach) return TerrainBlocks.SAND;
+        if (isMountainRock(x, z, floor, cliffDrop)) return mountainRock(x, z);
         return TerrainBlocks.GRASS_BLOCK;
+    }
+
+    /**
+     * Exposes rock gradually with both altitude and slope. Noise softens the boundary so
+     * it reads as broken scree and cliff bands instead of a perfectly level stone ring.
+     */
+    private boolean isMountainRock(int x, int z, int floor, int cliffDrop) {
+        double altitude = TerrainNoise.smoothstepClamped(
+            (floor - seaLevel - 22.0) / 34.0
+        );
+        double steepness = TerrainNoise.smoothstepClamped((cliffDrop - 1.0) / 3.0);
+        double breakup =
+            noise.fbm(x * 0.045 + 733.0, z * 0.045 - 419.0, 3, 2.0, 0.5) * 0.78 +
+            noise.hsh(x * 43, z * 47) * 0.22;
+        return altitude * 0.78 + steepness * 0.72 > 0.74 + (breakup - 0.5) * 0.28;
+    }
+
+    /** Muted three-block rock palette, clustered rather than salt-and-pepper random. */
+    private BlockState mountainRock(int x, int z) {
+        double patch = noise.fbm(
+            x * 0.075 + 271.0,
+            z * 0.075 - 613.0,
+            2, 2.0, 0.5
+        );
+        if (patch > 0.66) return TerrainBlocks.ANDESITE;
+        if (patch < 0.31 && noise.hsh(x * 59, z * 61) < 0.34) {
+            return TerrainBlocks.COBBLESTONE;
+        }
+        return TerrainBlocks.STONE;
     }
 
     /**
@@ -122,17 +153,28 @@ public final class SurfacePalette {
         double spawnDistance,
         double spawnHeight,
         double gridHeight,
-        boolean beach
+        boolean beach,
+        BlockState surface
     ) {
         if (beach) return TerrainBlocks.SAND;
         if (floor >= seaLevel) {
             boolean onIsland = spawnHeight > 0.0 || gridHeight > 0.5;
+            if (onIsland && isMountainRock(surface)) {
+                return TerrainBlocks.STONE;
+            }
             return onIsland ? TerrainBlocks.DIRT : TerrainBlocks.SAND;
         }
         if (spawnDistance < SPAWN_ISLAND_MAX_T || gridHeight > 0.01) {
             return noise.hsh(x * 11, z * 17) < 0.6 ? TerrainBlocks.SAND : TerrainBlocks.GRAVEL;
         }
         return TerrainBlocks.STONE;
+    }
+
+    /** Whether a chosen top block belongs to the exposed mountain-rock palette. */
+    private static boolean isMountainRock(BlockState surface) {
+        return surface.is(Blocks.STONE)
+            || surface.is(Blocks.ANDESITE)
+            || surface.is(Blocks.COBBLESTONE);
     }
 
     /** Matching slab for the underwater step that softens island drop-offs. */

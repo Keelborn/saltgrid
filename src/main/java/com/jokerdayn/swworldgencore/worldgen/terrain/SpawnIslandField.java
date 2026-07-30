@@ -19,9 +19,24 @@ import net.minecraft.util.Mth;
 public final class SpawnIslandField {
 
     private final TerrainNoise noise;
+    private final double mountainCos;
+    private final double mountainSin;
+    private final double primaryAlong;
+    private final double primaryAcross;
+    private final double secondaryAlong;
+    private final double secondaryAcross;
 
     public SpawnIslandField(TerrainNoise noise) {
         this.noise = noise;
+        double angle = noise.hsh(801, -809) * Math.PI;
+        this.mountainCos = Math.cos(angle);
+        this.mountainSin = Math.sin(angle);
+        this.primaryAlong = (noise.hsh(811, -821) - 0.5) * 30.0;
+        this.primaryAcross = (noise.hsh(823, -827) - 0.5) * 12.0;
+        double secondarySide = noise.hsh(829, -839) < 0.5 ? -1.0 : 1.0;
+        this.secondaryAlong =
+            secondarySide * (48.0 + noise.hsh(853, -857) * 20.0);
+        this.secondaryAcross = (noise.hsh(859, -863) - 0.5) * 18.0;
     }
 
     /**
@@ -101,39 +116,90 @@ public final class SpawnIslandField {
         ) * 0.3;
         double raw = (hillLarge + hillMid) * falloff * SPAWN_ISLAND_MAX_HEIGHT;
 
-        double interior = TerrainNoise.smoothstepClamped(1.0 - t * 2.5);
+        // Keep a broad green foothill belt between the beach and the first rock faces.
+        double interior = TerrainNoise.smoothstepClamped((0.58 - t) / 0.32);
         if (interior <= 0.01) return raw;
 
-        // The mountain spine lives in a separately warped domain so its ridges do not
-        // line up with the hill field underneath it.
+        // Work in a separately warped domain so the range does not line up with either
+        // the coastline or the hill field underneath it.
         double wx = x + noise.fbm(
             x * 0.015 + 101.3 + noise.seedOff(65, 3.0),
             z * 0.015 + 57.9 + noise.seedOff(66, 1.5),
             3, 2.0, 0.5
-        ) * 40;
+        ) * 34;
         double wz = z + noise.fbm(
             x * 0.015 + 33.7 + noise.seedOff(67, 1.0),
             z * 0.015 + 88.2 + noise.seedOff(68, 2.2),
             3, 2.0, 0.5
-        ) * 30;
-        double ridge = Math.pow(
+        ) * 28;
+
+        // A seed-stable axis gives the island an actual mountain range rather than a
+        // round patch of ridged noise. Low-frequency bend prevents a ruler-straight crest.
+        double along = wx * mountainCos + wz * mountainSin;
+        double across = -wx * mountainSin + wz * mountainCos;
+        double bend = (
+            noise.fbm(
+                along * 0.012 + 417.0 + noise.seedOff(73, 2.0),
+                along * 0.004 - 263.0 + noise.seedOff(74, 1.0),
+                3, 2.0, 0.5
+            ) - 0.5
+        ) * 38.0;
+        double curvedAcross = across + bend;
+
+        double lengthMask = TerrainNoise.smoothstepClamped(
+            (112.0 - Math.abs(along)) / 40.0
+        );
+        double spine = Math.pow(
+            TerrainNoise.smoothstepClamped(
+                (50.0 - Math.abs(curvedAcross)) / 50.0
+            ),
+            1.35
+        ) * lengthMask;
+
+        // Two overlapping summits break the crest into a recognisable high peak and a
+        // lower companion peak. Their positions drift per seed but remain on the spine.
+        double primary = compactPeak(
+            along - primaryAlong, curvedAcross - primaryAcross, 58.0, 42.0
+        );
+
+        double secondary = compactPeak(
+            along - secondaryAlong, curvedAcross - secondaryAcross, 50.0, 36.0
+        ) * 0.78;
+
+        // Ridged noise now only cuts crags into the deliberate silhouette. Previously it
+        // was the silhouette, which made the whole centre look like an amorphous lump.
+        double crags = Math.pow(
             noise.ridgeNoise(
                 wx * 0.018 + 200.0 + noise.seedOff(69, 5.0),
                 wz * 0.022 + 150.0 + noise.seedOff(70, 3.0),
-                5, 2.0, 0.55
+                4, 2.0, 0.55
             ),
-            0.6
+            1.45
         );
-        double mountainDetail = noise.fbm(
+        double fineDetail = noise.fbm(
             wx * 0.06 + 300.0 + noise.seedOff(71, 4.0),
             wz * 0.06 + 250.0 + noise.seedOff(72, 2.0),
             3, 2.0, 0.45
-        ) * 0.3;
-        return raw +
-            SPAWN_ISLAND_MOUNTAIN_HEIGHT *
-            (ridge * 0.75 + mountainDetail * 0.25) *
-            interior *
-            falloff;
+        ) - 0.5;
+        double silhouette = Math.max(primary, Math.max(secondary, spine * 0.82));
+        double cragFactor = Math.max(0.58, 0.74 + crags * 0.34 + fineDetail * 0.16);
+        double mountain =
+            SPAWN_ISLAND_MOUNTAIN_HEIGHT * silhouette * cragFactor * interior * falloff;
+        return raw + mountain;
+    }
+
+    /** Smooth elliptical peak with a broad foot and a compact summit. */
+    private static double compactPeak(
+        double along,
+        double across,
+        double radiusAlong,
+        double radiusAcross
+    ) {
+        double normalized = Math.sqrt(
+            (along * along) / (radiusAlong * radiusAlong) +
+            (across * across) / (radiusAcross * radiusAcross)
+        );
+        return Math.pow(TerrainNoise.smoothstepClamped(1.0 - normalized), 0.78);
     }
 
     /** True when the column is inside the spawn island's shoreline. */

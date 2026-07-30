@@ -110,7 +110,7 @@ public final class ColumnProbe {
 
         int minNeighbor = floor;
         boolean onSlope = false;
-        if (volcano || (floor < seaLevel && onIsland)) {
+        if (volcano || onIsland) {
             int west = terrain.columns.floorAt(x - 1, z);
             int east = terrain.columns.floorAt(x + 1, z);
             int north = terrain.columns.floorAt(x, z - 1);
@@ -127,6 +127,7 @@ public final class ColumnProbe {
             spawnDistance
         );
         boolean beach = terrain.columns.isBeach(x, z, floor);
+        int cliffDrop = Math.max(0, floor - minNeighbor);
         boolean volcanicStrata = volcano && gridDistance <= VOLCANO_SHELF_T;
 
         BlockState lakeSurface = IslandLakeField.surfaceOverride(lake);
@@ -136,13 +137,13 @@ public final class ColumnProbe {
                 ? terrain.volcanic.surface(
                     x, z, floor, gridDistance, crater, lavaLevel, centerX, centerZ)
                 : terrain.surface.surface(
-                    x, z, floor, spawnDistance, gridHeight, gridDistance, beach);
+                    x, z, floor, spawnDistance, gridHeight, gridDistance, beach, cliffDrop);
         BlockState flatSubsurface = volcanicStrata
             ? null
             : volcano
                 ? terrain.volcanic.shelfSubsurface(x, z)
                 : terrain.surface.subsurface(
-                    x, z, floor, spawnDistance, spawnHeight, gridHeight, beach);
+                    x, z, floor, spawnDistance, spawnHeight, gridHeight, beach, surface);
         double fissure = volcanicStrata ? terrain.volcanic.fissureAt(x, z) : 0.0;
         int strataShift = volcanicStrata ? terrain.volcanic.strataShiftAt(x, z) : 0;
 

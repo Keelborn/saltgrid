@@ -35,15 +35,12 @@ public final class OceanTerrainDigestTest {
     /** Matches {@code data/swworldgencore/dimension/ocean.json}. */
     private static final int SEA_LEVEL = 63;
 
-    /**
-     * Captured from commit {@code dce9cb6}, before the package split. Verified identical
-     * before and after that refactor.
-     */
+    /** Baseline including the intentional multi-peak mountain-range shaping. */
     private static final String[] EXPECTED = {
         "seed=1",
         "island=1071,987",
         "volcano=-968,-3192,-943,-3213",
-        "boulders=7 -71:-75 -52:-34 -90:-31 -28:-96 -101:52 -26:-66 -11:-82",
+        "boulders=7 -71:-75 -68:53 106:30 -36:99 93:60 -28:-96 95:-38",
         "spawn[1,0]=271,64,-112/1",
         "spawn[1,1]=328,64,0/1",
         "spawn[1,2]=31,64,318/1",
@@ -53,10 +50,10 @@ public final class OceanTerrainDigestTest {
         "spawn[3,0]=269,64,-110/3",
         "spawn[3,1]=326,64,16/3",
         "spawn[3,2]=31,64,316/3",
-        "region spawnIsland columns=2500 hashed=833 heights=506950e3be624d65"
-            + " biomes=a82253db8baf4a6d blocks=2b4fbb0d77db8007",
-        "region gridIsland columns=2500 hashed=833 heights=9614be4cbcdf51ab"
-            + " biomes=f8da34c14f815a27 blocks=83fad90694faa9b2",
+        "region spawnIsland columns=2500 hashed=833 heights=67ac1de1fcc67c85"
+            + " biomes=a82253db8baf4a6d blocks=cf14ce6abfe9adb4",
+        "region gridIsland columns=2500 hashed=833 heights=e517cf9b004fd6c8"
+            + " biomes=a8738ee477e44234 blocks=68f4abf8d8141cdd",
         "region volcano columns=3136 hashed=1046 heights=dc8245551be7e9e4"
             + " biomes=21528f09d8c831d2 blocks=aad13386af33bbb3",
         "region openOcean columns=900 hashed=300 heights=7e88982c3c2e91e8"
@@ -64,7 +61,7 @@ public final class OceanTerrainDigestTest {
         "seed=-7493821045",
         "island=1067,-1036",
         "volcano=-3090,-1220,-3104,-1186",
-        "boulders=6 -69:-77 -33:-107 -91:27 -114:-21 -99:-47 57:-103",
+        "boulders=6 -46:80 -69:-77 -52:43 -33:-107 -29:115 89:51",
         "spawn[1,0]=-104,64,-127/1",
         "spawn[1,1]=31,65,313/1",
         "spawn[1,2]=-170,64,207/1",
@@ -74,10 +71,10 @@ public final class OceanTerrainDigestTest {
         "spawn[3,0]=-102,64,-125/3",
         "spawn[3,1]=31,65,311/3",
         "spawn[3,2]=-168,64,205/3",
-        "region spawnIsland columns=2500 hashed=833 heights=54f9ec5f921a7305"
-            + " biomes=fe7d631a2eec42db blocks=f1690ff697ad6d54",
-        "region gridIsland columns=2500 hashed=834 heights=253c7e854c45633e"
-            + " biomes=1fbb955f5770cf77 blocks=be96d1f3baa8c97b",
+        "region spawnIsland columns=2500 hashed=833 heights=3b919cefd1c43a46"
+            + " biomes=fe7d631a2eec42db blocks=5aa768f3be7a6def",
+        "region gridIsland columns=2500 hashed=834 heights=f23cb155f96966f9"
+            + " biomes=cd42bc05e2c1645b blocks=b13ae17eee6f569a",
         "region volcano columns=3136 hashed=1046 heights=10cf420d869d412e"
             + " biomes=2da98d6b50d4f6e2 blocks=c3cb08c458f1bd61",
         "region openOcean columns=900 hashed=300 heights=eec39f42788d31bd"
@@ -85,7 +82,7 @@ public final class OceanTerrainDigestTest {
         "seed=5916308533714060029",
         "island=812,848",
         "volcano=3276,3008,3251,2987",
-        "boulders=3 -43:-84 -94:-19 -67:-36",
+        "boulders=3 -6:110 -8:-67 -54:64",
         "spawn[1,0]=-207,64,52/1",
         "spawn[1,1]=-74,64,295/1",
         "spawn[1,2]=192,64,-174/1",
@@ -95,10 +92,10 @@ public final class OceanTerrainDigestTest {
         "spawn[3,0]=-205,64,52/3",
         "spawn[3,1]=-74,65,293/3",
         "spawn[3,2]=190,64,-172/3",
-        "region spawnIsland columns=2500 hashed=833 heights=ef12d923f9909fa5"
-            + " biomes=1f9a18a4cfd3add3 blocks=cff93b8187271997",
-        "region gridIsland columns=2500 hashed=834 heights=60f25805fdc421e1"
-            + " biomes=b5275238d643dd44 blocks=7ca12b083e7e98c5",
+        "region spawnIsland columns=2500 hashed=833 heights=2c3ea5c2879b4185"
+            + " biomes=1f9a18a4cfd3add3 blocks=aa1fdd6fde84027",
+        "region gridIsland columns=2500 hashed=834 heights=9d9994f45dbe3d66"
+            + " biomes=2811d71febe0c897 blocks=742ea8d9470b7e2c",
         "region volcano columns=3136 hashed=1045 heights=90567c7c1a375af7"
             + " biomes=1fa2bccddc6dc9d blocks=d247333a5e336e61",
         "region openOcean columns=900 hashed=300 heights=5b3bac38c14adb6e"

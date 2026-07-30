@@ -8,6 +8,7 @@ import static com.jokerdayn.swworldgencore.worldgen.terrain.IslandSettings.GRID_
 import static com.jokerdayn.swworldgencore.worldgen.terrain.IslandSettings.GRID_ISLAND_MIN_HEIGHT;
 import static com.jokerdayn.swworldgencore.worldgen.terrain.IslandSettings.GRID_ISLAND_MIN_RADIUS;
 import static com.jokerdayn.swworldgencore.worldgen.terrain.IslandSettings.GRID_ISLAND_MOUNTAIN_CHANCE;
+import static com.jokerdayn.swworldgencore.worldgen.terrain.IslandSettings.GRID_ISLAND_MOUNTAIN_HEIGHT;
 import static com.jokerdayn.swworldgencore.worldgen.terrain.IslandSettings.GRID_ISLAND_RADIUS_SPREAD;
 import static com.jokerdayn.swworldgencore.worldgen.terrain.IslandSettings.VOLCANO_CHANCE;
 import static com.jokerdayn.swworldgencore.worldgen.terrain.IslandSettings.VOLCANO_CONE_HEIGHT;
@@ -178,13 +179,73 @@ public final class GridIslandField {
         double h = hill * bestMaxHeight * falloff;
 
         if (bestMountain) {
-            double ridge = Math.sqrt(noise.ridgeNoise(
+            double localX = x - bestCenterX;
+            double localZ = z - bestCenterZ;
+            double angle =
+                noise.hsh(bestCellX * 101 + 17, bestCellZ * 103 - 19) * Math.PI;
+            double cos = Math.cos(angle);
+            double sin = Math.sin(angle);
+            double along = localX * cos + localZ * sin;
+            double across = -localX * sin + localZ * cos;
+            double bend = (
+                noise.fbm(
+                    along * 0.018 + bestCellX * 59.0,
+                    along * 0.006 - bestCellZ * 61.0,
+                    3, 2.0, 0.5
+                ) - 0.5
+            ) * bestRadius * 0.16;
+            double curvedAcross = across + bend;
+
+            double lengthMask = TerrainNoise.smoothstepClamped(
+                (bestRadius * 0.58 - Math.abs(along)) / (bestRadius * 0.20)
+            );
+            double spine = Math.pow(
+                TerrainNoise.smoothstepClamped(
+                    (bestRadius * 0.28 - Math.abs(curvedAcross)) /
+                    (bestRadius * 0.28)
+                ),
+                1.4
+            ) * lengthMask;
+
+            double peakAlong = (
+                noise.hsh(bestCellX * 107 + 23, bestCellZ * 109 - 29) - 0.5
+            ) * bestRadius * 0.24;
+            double peakAcross = (
+                noise.hsh(bestCellX * 113 + 31, bestCellZ * 127 - 37) - 0.5
+            ) * bestRadius * 0.08;
+            double primary = compactPeak(
+                along - peakAlong,
+                curvedAcross - peakAcross,
+                bestRadius * 0.31,
+                bestRadius * 0.23
+            );
+
+            double secondSide =
+                noise.hsh(bestCellX * 131 + 41, bestCellZ * 137 - 43) < 0.5
+                    ? -1.0
+                    : 1.0;
+            double secondary = compactPeak(
+                along - secondSide * bestRadius * 0.30,
+                curvedAcross + peakAcross * 0.5,
+                bestRadius * 0.28,
+                bestRadius * 0.21
+            ) * 0.72;
+
+            double crags = Math.pow(noise.ridgeNoise(
                 x * 0.012 + bestCellX * 53.0 + noise.seedOff(bestCellX * 13 + bestCellZ, 2.0),
                 z * 0.014 + bestCellZ * 67.0 + noise.seedOff(bestCellX * 17 + bestCellZ, 1.3),
                 4, 2.0, 0.55
-            ));
-            double mountainMask = Mth.clamp(1.0 - d / (bestRadius * 0.6), 0.0, 1.0);
-            h += bestMaxHeight * 1.5 * ridge * (mountainMask * mountainMask) * falloff;
+            ), 1.5);
+            double silhouette = Math.max(primary, Math.max(secondary, spine * 0.78));
+            double mountainMask = TerrainNoise.smoothstepClamped(
+                (0.66 - t) / 0.22
+            );
+            double cragFactor = 0.72 + crags * 0.34;
+            h += GRID_ISLAND_MOUNTAIN_HEIGHT *
+                silhouette *
+                cragFactor *
+                mountainMask *
+                falloff;
         }
 
         boolean volcano = isVolcano(bestCellX, bestCellZ, bestCenterX, bestCenterZ);
@@ -203,6 +264,20 @@ public final class GridIslandField {
         }
 
         shapeVolcano(x, z, bestCellX, bestCellZ, bestCenterX, bestCenterZ, bestRadius, out);
+    }
+
+    /** Smooth elliptical peak used to anchor a mountain range to an intentional shape. */
+    private static double compactPeak(
+        double along,
+        double across,
+        double radiusAlong,
+        double radiusAcross
+    ) {
+        double normalized = Math.sqrt(
+            (along * along) / (radiusAlong * radiusAlong) +
+            (across * across) / (radiusAcross * radiusAcross)
+        );
+        return Math.pow(TerrainNoise.smoothstepClamped(1.0 - normalized), 0.8);
     }
 
     /**

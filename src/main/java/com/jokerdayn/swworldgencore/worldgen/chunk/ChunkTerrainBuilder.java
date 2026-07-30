@@ -254,7 +254,8 @@ public final class ChunkTerrainBuilder {
                             scratch.volcanoCenterX[index], scratch.volcanoCenterZ[index]
                         )
                         : terrain.surface.surface(
-                            wx, wz, floor, spawnDistance, gridHeight, gridDistance, beach
+                            wx, wz, floor, spawnDistance, gridHeight, gridDistance, beach,
+                            cliffDrop
                         );
 
                 // Every entry is assigned unconditionally: the scratch is reused across
@@ -272,7 +273,8 @@ public final class ChunkTerrainBuilder {
                         : volcano
                             ? terrain.volcanic.shelfSubsurface(wx, wz)
                             : terrain.surface.subsurface(
-                                wx, wz, floor, spawnDistance, spawnHeight, gridHeight, beach
+                                wx, wz, floor, spawnDistance, spawnHeight, gridHeight, beach,
+                                scratch.surfaces[columnIndex]
                             );
                 }
 
