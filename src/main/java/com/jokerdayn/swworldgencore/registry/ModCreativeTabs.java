@@ -28,7 +28,6 @@ public final class ModCreativeTabs {
                 output.accept(ModItems.ROCK.get());
                 output.accept(ModItems.BRONZE_ORE.get());
                 output.accept(ModItems.BRONZE_RAW.get());
-                output.accept(ModItems.BRONZE_INGOT.get());
             })
             .build()
     );

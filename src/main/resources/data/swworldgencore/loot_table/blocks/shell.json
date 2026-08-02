@@ -11,6 +11,15 @@
       "entries": [
         {
           "type": "minecraft:item",
+          "functions": [
+            {
+              "block": "swworldgencore:shell",
+              "function": "minecraft:copy_state",
+              "properties": [
+                "variation"
+              ]
+            }
+          ],
           "name": "swworldgencore:shell"
         }
       ],

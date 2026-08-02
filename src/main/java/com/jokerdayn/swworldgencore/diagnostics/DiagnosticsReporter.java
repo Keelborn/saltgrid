@@ -73,7 +73,7 @@ final class DiagnosticsReporter {
                 diagnostics.phaseStats(phase),
                 phase.budgetNs(),
                 seconds,
-                diagnostics.stageStats(phase.parent()).totalElapsedNs()
+                phase.name().startsWith("TREE_") ? -1L : diagnostics.stageStats(phase.parent()).totalElapsedNs()
             );
         }
         return out.toString();

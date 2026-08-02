@@ -103,7 +103,10 @@ public final class TimingStats {
         long seen = 0L;
         for (int i = 0; i < HISTOGRAM_BUCKETS; i++) {
             seen += histogram.get(i);
-            if (seen >= target) return Math.min(UPPER_NS[i], maxNs.get());
+            if (seen >= target) {
+                long lower = i == 0 ? 0L : UPPER_NS[i - 1];
+                return Math.min(lower + (UPPER_NS[i] - lower) / 2, maxNs.get());
+            }
         }
         return maxNs.get();
     }

@@ -370,14 +370,17 @@ public final class GeneratorDiagnostics {
         Path report = directory.resolve(baseName + ".txt");
         Path csvPath = directory.resolve(baseName + ".csv");
         int suffix = 2;
-        while (Files.exists(report) || Files.exists(csvPath)) {
-            report = directory.resolve(baseName + '-' + suffix + ".txt");
-            csvPath = directory.resolve(baseName + '-' + suffix + ".csv");
-            suffix++;
+        while (true) {
+            try {
+                Files.writeString(report, fullReport(seed), StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.CREATE_NEW);
+                Files.writeString(csvPath, csv(seed), StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.CREATE_NEW);
+                return new ExportResult(report.toAbsolutePath(), csvPath.toAbsolutePath());
+            } catch (java.nio.file.FileAlreadyExistsException e) {
+                report = directory.resolve(baseName + '-' + suffix + ".txt");
+                csvPath = directory.resolve(baseName + '-' + suffix + ".csv");
+                suffix++;
+            }
         }
-        Files.writeString(report, fullReport(seed), StandardCharsets.UTF_8);
-        Files.writeString(csvPath, csv(seed), StandardCharsets.UTF_8);
-        return new ExportResult(report.toAbsolutePath(), csvPath.toAbsolutePath());
     }
 
     // -------------------------------------------------------------------------

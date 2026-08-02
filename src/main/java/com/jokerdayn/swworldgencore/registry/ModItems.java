@@ -51,9 +51,6 @@ public final class ModItems {
     public static final DeferredHolder<Item, Item> BRONZE_RAW =
         ITEMS.register("bronze_q", () -> new Item(new Item.Properties()));
 
-    public static final DeferredHolder<Item, Item> BRONZE_INGOT =
-        ITEMS.register("bronze_ingot", () -> new Item(new Item.Properties()));
-
     private ModItems() {}
 
     public static void register(IEventBus modEventBus) {

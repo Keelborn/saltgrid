@@ -152,10 +152,6 @@ public class OceanChunkGenerator extends ChunkGenerator {
         StructureManager structureManager,
         ChunkAccess chunk
     ) {
-        if (chunk.getLevel() instanceof WorldGenLevel worldGenLevel) {
-            syncSeedFromLevel(worldGenLevel);
-        }
-
         OceanGeneratorPipeline current = pipeline;
         ChunkPos pos = chunk.getPos();
         Token benchmark =
